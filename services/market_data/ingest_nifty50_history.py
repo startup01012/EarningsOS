@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import select
 
 from apps.api.db.models import PriceBar, Stock
@@ -16,54 +17,70 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 def ingest_nifty50_history(start: datetime, end: datetime) -> tuple[int, int]:
+    """Download NIFTY 50 daily history and bulk-insert it idempotently."""
     reference = pd.read_csv(REFERENCE_PATH)
     if len(reference) != 50 or reference["symbol"].duplicated().any():
         raise ValueError("NIFTY 50 reference must contain exactly 50 unique symbols")
 
+    symbols = reference["symbol"].astype(str).str.strip().str.upper().tolist()
     provider = YFinanceProvider()
+    db = SessionLocal()
     inserted = 0
     skipped = 0
-    db = SessionLocal()
-    try:
-        for symbol in reference["symbol"].astype(str).str.strip().str.upper():
-            stock = db.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
-            if stock is None:
-                raise ValueError(f"Stock {symbol} is missing; run NIFTY 50 stock ingestion first")
+    empty_symbols: list[str] = []
 
+    try:
+        stocks = db.execute(
+            select(Stock).where(Stock.symbol.in_(symbols), Stock.exchange == "NSE")
+        ).scalars().all()
+        stock_by_symbol = {stock.symbol: stock for stock in stocks}
+        missing_stocks = sorted(set(symbols) - set(stock_by_symbol))
+        if missing_stocks:
+            raise ValueError(
+                "Stocks missing from database; run NIFTY 50 stock ingestion first: "
+                f"{missing_stocks}"
+            )
+
+        for symbol in symbols:
             bars = provider.get_historical_bars(symbol, start, end, interval="1d")
-            for bar in bars:
-                existing = db.execute(
-                    select(PriceBar.id).where(
-                        PriceBar.stock_id == stock.id,
-                        PriceBar.interval == bar.interval,
-                        PriceBar.timestamp == bar.timestamp,
-                        PriceBar.source == bar.source,
-                    )
-                ).scalar_one_or_none()
-                if existing is not None:
-                    skipped += 1
-                    continue
-                db.add(
-                    PriceBar(
-                        stock_id=stock.id,
-                        interval=bar.interval,
-                        timestamp=bar.timestamp,
-                        open=bar.open,
-                        high=bar.high,
-                        low=bar.low,
-                        close=bar.close,
-                        volume=bar.volume,
-                        traded_value=bar.traded_value,
-                        source=bar.source,
-                    )
-                )
-                inserted += 1
+            if not bars:
+                empty_symbols.append(symbol)
+                continue
+
+            rows = [
+                {
+                    "stock_id": stock_by_symbol[bar.symbol].id,
+                    "interval": bar.interval,
+                    "timestamp": bar.timestamp,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                    "traded_value": bar.traded_value,
+                    "source": bar.source,
+                }
+                for bar in bars
+            ]
+
+            statement = insert(PriceBar).values(rows).on_conflict_do_nothing(
+                constraint="uq_price_bar"
+            )
+            result = db.execute(statement)
+            inserted += result.rowcount or 0
+            skipped += len(rows) - (result.rowcount or 0)
             db.commit()
+            print(f"{symbol}: downloaded={len(rows)} inserted={result.rowcount or 0}")
+
+        if empty_symbols:
+            print(f"Symbols with no returned bars: {', '.join(empty_symbols)}")
+
     except Exception:
         db.rollback()
         raise
     finally:
         db.close()
+
     return inserted, skipped
 
 
