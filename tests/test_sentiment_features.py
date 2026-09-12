@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import pytest
 
 from services.sentiment.features import build_daily_features
 
@@ -36,5 +37,5 @@ def test_daily_features_use_published_date_and_preserve_probabilities():
     assert feature.positive_ratio == 0.5
     assert feature.negative_ratio == 0.5
     assert feature.neutral_ratio == 0.0
-    assert feature.mean_score == 0.85
+    assert feature.mean_score == pytest.approx(0.85)
     assert feature.sentiment_balance == (0.9 - 0.05 + 0.1 - 0.8) / 2
