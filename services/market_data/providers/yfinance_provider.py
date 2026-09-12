@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
 from ..base import MarketDataProvider
 from ..schemas import MarketBar
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class YFinanceProvider(MarketDataProvider):
@@ -57,9 +60,9 @@ class YFinanceProvider(MarketDataProvider):
         for timestamp, row in frame.iterrows():
             ts = timestamp.to_pydatetime() if hasattr(timestamp, "to_pydatetime") else timestamp
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
+                ts = ts.replace(tzinfo=IST)
             else:
-                ts = ts.astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
+                ts = ts.astimezone(IST)
 
             bars.append(
                 MarketBar(
@@ -79,8 +82,10 @@ class YFinanceProvider(MarketDataProvider):
         return bars
 
     def get_latest_bar(self, symbol: str) -> MarketBar | None:
-        from datetime import timedelta
-
-        now = datetime.now(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
-        bars = self.get_historical_bars(symbol, now - timedelta(days=7), now + timedelta(days=1))
+        now = datetime.now(IST)
+        bars = self.get_historical_bars(
+            symbol,
+            now - timedelta(days=7),
+            now + timedelta(days=1),
+        )
         return bars[-1] if bars else None
