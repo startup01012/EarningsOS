@@ -5,8 +5,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from apps.api.db.models import PriceBar, Stock
 from apps.api.db.session import SessionLocal
@@ -45,6 +45,7 @@ def ingest_nifty50_history(start: datetime, end: datetime) -> tuple[int, int]:
             bars = provider.get_historical_bars(symbol, start, end, interval="1d")
             if not bars:
                 empty_symbols.append(symbol)
+                print(f"{symbol}: downloaded=0 inserted=0")
                 continue
 
             rows = [
@@ -63,14 +64,22 @@ def ingest_nifty50_history(start: datetime, end: datetime) -> tuple[int, int]:
                 for bar in bars
             ]
 
-            statement = insert(PriceBar).values(rows).on_conflict_do_nothing(
-                constraint="uq_price_bar"
+            # RETURNING lets us count actual inserts reliably. PostgreSQL/psycopg
+            # may report rowcount=-1 for INSERT ... ON CONFLICT statements.
+            statement = (
+                insert(PriceBar)
+                .values(rows)
+                .on_conflict_do_nothing(constraint="uq_price_bar")
+                .returning(PriceBar.id)
             )
             result = db.execute(statement)
-            inserted += result.rowcount or 0
-            skipped += len(rows) - (result.rowcount or 0)
+            inserted_now = len(result.fetchall())
+            skipped_now = len(rows) - inserted_now
+
+            inserted += inserted_now
+            skipped += skipped_now
             db.commit()
-            print(f"{symbol}: downloaded={len(rows)} inserted={result.rowcount or 0}")
+            print(f"{symbol}: downloaded={len(rows)} inserted={inserted_now} skipped={skipped_now}")
 
         if empty_symbols:
             print(f"Symbols with no returned bars: {', '.join(empty_symbols)}")
