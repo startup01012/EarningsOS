@@ -6,3 +6,6 @@ sqlalchemy
 psycopg[binary]
 alembic
 yfinance>=1.7,<2
+transformers>=4.45,<5
+torch>=2.2,<3
+feedparser>=6.0,<7
