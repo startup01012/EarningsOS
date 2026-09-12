@@ -31,11 +31,22 @@ class FinBERTSentiment:
             )
         return self._pipeline
 
+    @staticmethod
+    def _normalize_outputs(outputs) -> list[dict]:
+        """Normalize Transformers single-input and batched output shapes."""
+        if not outputs:
+            return []
+        if isinstance(outputs[0], list):
+            return outputs[0]
+        return outputs
+
     def predict(self, text: str) -> SentimentResult:
         if not text or not text.strip():
             raise ValueError("text must not be empty")
-        outputs = self._load()(text[:4000])
+        outputs = self._normalize_outputs(self._load()(text[:4000]))
         scores = {item["label"].lower(): float(item["score"]) for item in outputs}
+        if not scores:
+            raise RuntimeError("FinBERT returned no sentiment scores")
         label = max(scores, key=scores.get)
         return SentimentResult(
             label=label,
