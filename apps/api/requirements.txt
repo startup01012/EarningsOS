@@ -5,3 +5,4 @@ pydantic-settings
 sqlalchemy
 psycopg[binary]
 alembic
+yfinance>=1.7,<2
