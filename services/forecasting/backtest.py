@@ -8,12 +8,19 @@ from .base import ForecastAdapter
 from .price_series import PriceObservation, build_forecast_request
 
 
+REGIME_BULL = "bull"
+REGIME_BEAR = "bear"
+REGIME_SIDEWAYS_HIGH_VOLATILITY = "sideways_high_volatility"
+
+
 @dataclass(frozen=True)
 class BacktestCase:
     cutoff_timestamp: datetime
     actual: list[float]
     predicted: list[float]
     cutoff_close: float = 0.0
+    context_closes: list[float] | None = None
+    regime: str | None = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,45 @@ class BacktestMetrics:
     mape: float | None
     smape: float | None
     directional_accuracy: float | None
+
+
+def classify_regime(
+    context_closes: list[float],
+    *,
+    momentum_window: int = 20,
+    volatility_window: int = 20,
+    bull_bear_threshold: float = 0.05,
+    high_volatility_daily_std: float = 0.02,
+) -> str:
+    """Classify a cutoff using only information available in its context.
+
+    Bull/bear require a 20-session price move of at least +/-5% and daily
+    return volatility below 2%. All other cutoffs, including high-volatility
+    bull/bear periods, are grouped as sideways/high-volatility so the regime
+    labels are mutually exclusive and no future information is used.
+    """
+    if len(context_closes) < max(momentum_window + 1, volatility_window + 1):
+        return REGIME_SIDEWAYS_HIGH_VOLATILITY
+
+    momentum_start = context_closes[-momentum_window - 1]
+    momentum_end = context_closes[-1]
+    if momentum_start == 0:
+        return REGIME_SIDEWAYS_HIGH_VOLATILITY
+    momentum = momentum_end / momentum_start - 1.0
+
+    recent = context_closes[-volatility_window - 1 :]
+    returns = [recent[index] / recent[index - 1] - 1.0 for index in range(1, len(recent)) if recent[index - 1] != 0]
+    if len(returns) < 2:
+        daily_std = 0.0
+    else:
+        mean_return = sum(returns) / len(returns)
+        daily_std = sqrt(sum((value - mean_return) ** 2 for value in returns) / (len(returns) - 1))
+
+    if daily_std < high_volatility_daily_std and momentum >= bull_bear_threshold:
+        return REGIME_BULL
+    if daily_std < high_volatility_daily_std and momentum <= -bull_bear_threshold:
+        return REGIME_BEAR
+    return REGIME_SIDEWAYS_HIGH_VOLATILITY
 
 
 def _direction(value: float, reference: float) -> int:
@@ -118,6 +164,7 @@ def run_backtest(
     while cutoff_end + horizon <= len(ordered):
         context = ordered[cutoff_end - context_length : cutoff_end]
         future = ordered[cutoff_end : cutoff_end + horizon]
+        context_closes = [item.close for item in context]
         request = build_forecast_request(symbol, context, horizon)
         result = adapter.forecast(request)
         cases.append(
@@ -126,6 +173,8 @@ def run_backtest(
                 actual=[item.close for item in future],
                 predicted=result.median,
                 cutoff_close=context[-1].close,
+                context_closes=context_closes,
+                regime=classify_regime(context_closes),
             )
         )
 
