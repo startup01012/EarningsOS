@@ -198,7 +198,8 @@ def main() -> None:
     db = SessionLocal()
     results: list[Result] = []
     chronos = Chronos2Adapter(device_map=args.device_map)
-    kronos = None if args.skip_kronos else KronosSmallAdapter(device_map=args.device_map)
+    # KronosSmallAdapter accepts a device argument, not Chronos' device_map.
+    kronos = None if args.skip_kronos else KronosSmallAdapter(device=args.device_map)
     try:
         for index, symbol in enumerate(symbols, start=1):
             print(f"\n[{index}/{len(symbols)}] {symbol}")
