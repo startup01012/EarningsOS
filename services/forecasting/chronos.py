@@ -55,6 +55,12 @@ class Chronos2Adapter(ForecastAdapter):
             }
         )
 
+        # NSE equity daily observations occur on trading days, so the timestamp
+        # sequence is intentionally not calendar-daily (weekends and exchange
+        # holidays are absent). Chronos-2 requires a regular/inferable frequency
+        # when ``freq`` is omitted. Explicitly use pandas BusinessDay frequency to
+        # describe the trading-day cadence instead of asking Chronos to infer a
+        # calendar frequency from the irregular calendar dates.
         result = pipeline.predict_df(
             context_df,
             prediction_length=request.horizon,
@@ -62,6 +68,7 @@ class Chronos2Adapter(ForecastAdapter):
             id_column="item_id",
             timestamp_column="timestamp",
             target="target",
+            freq="B",
         )
 
         if result.empty:
