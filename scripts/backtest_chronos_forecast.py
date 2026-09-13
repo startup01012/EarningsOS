@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 
 from apps.api.db.session import SessionLocal
-from services.forecasting.backtest import run_backtest
+from services.forecasting.backtest import BacktestCase, run_backtest, evaluate_cases
+from services.forecasting.benchmarks import evaluate_predictions, naive_last_close_predictions
 from services.forecasting.chronos import Chronos2Adapter
 from services.forecasting.price_loader import load_close_observations
 
@@ -56,6 +57,9 @@ def main() -> None:
         max_cases=args.max_cases,
     )
 
+    naive_predictions = naive_last_close_predictions(cases)
+    naive_metrics = evaluate_predictions(cases, naive_predictions)
+
     print(f"Model: {adapter.model_id}")
     print(f"Symbol: {args.symbol.strip().upper()}")
     print(f"Available observations: {len(observations)}")
@@ -63,18 +67,36 @@ def main() -> None:
     print(f"Cases: {metrics.cases}")
     print(f"Horizon: {metrics.horizons}")
     print(f"Context length: {args.context_length}")
+    print("\n=== Chronos-2 ===")
     print(f"MAE: {metrics.mae:.6f}")
     print(f"RMSE: {metrics.rmse:.6f}")
     print(f"MAPE: {metrics.mape:.6f}%" if metrics.mape is not None else "MAPE: N/A")
+    print(f"sMAPE: {metrics.smape:.6f}%" if metrics.smape is not None else "sMAPE: N/A")
     print(
         f"Directional accuracy: {metrics.directional_accuracy:.2%}"
         if metrics.directional_accuracy is not None
         else "Directional accuracy: N/A"
     )
-    print("Cases:")
+    print("\n=== Naive last-close baseline ===")
+    print(f"MAE: {naive_metrics.mae:.6f}")
+    print(f"RMSE: {naive_metrics.rmse:.6f}")
+    print(f"MAPE: {naive_metrics.mape:.6f}%" if naive_metrics.mape is not None else "MAPE: N/A")
+    print(f"sMAPE: {naive_metrics.smape:.6f}%" if naive_metrics.smape is not None else "sMAPE: N/A")
+    print("Directional accuracy: N/A (constant forecast has no directional signal)")
+
+    print("\n=== Chronos improvement vs naive ===")
+    print(f"MAE change: {metrics.mae - naive_metrics.mae:+.6f} (negative is better)")
+    print(f"RMSE change: {metrics.rmse - naive_metrics.rmse:+.6f} (negative is better)")
+    if metrics.mape is not None and naive_metrics.mape is not None:
+        print(f"MAPE change: {metrics.mape - naive_metrics.mape:+.6f} percentage points (negative is better)")
+    if metrics.smape is not None and naive_metrics.smape is not None:
+        print(f"sMAPE change: {metrics.smape - naive_metrics.smape:+.6f} percentage points (negative is better)")
+
+    print("\nCases:")
     for case in cases:
         print(
             f"  cutoff={case.cutoff_timestamp.isoformat()} "
+            f"cutoff_close={case.cutoff_close:.6f} "
             f"actual={case.actual} predicted={case.predicted}"
         )
 
