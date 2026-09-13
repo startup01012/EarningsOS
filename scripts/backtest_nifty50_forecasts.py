@@ -8,11 +8,7 @@ import pandas as pd
 
 from apps.api.db.session import SessionLocal
 from services.forecasting.backtest import BacktestCase, evaluate_cases, run_backtest
-from services.forecasting.benchmarks import (
-    evaluate_predictions,
-    evaluate_return_predictions,
-    naive_last_close_predictions,
-)
+from services.forecasting.benchmarks import evaluate_predictions, evaluate_return_predictions, naive_last_close_predictions
 from services.forecasting.base import ForecastRequest
 from services.forecasting.chronos import Chronos2Adapter
 from services.forecasting.kronos import KronosSmallAdapter
@@ -31,6 +27,7 @@ class Result:
     symbol: str
     model: str
     cases: int
+    horizon: int
     mae: float
     rmse: float
     mape: float | None
@@ -70,29 +67,38 @@ def _load_default_symbols(path: str) -> list[str]:
     return symbols[:10] if symbols else list(DEFAULT_SYMBOLS)
 
 
-def _evaluate_returns(cases: list[BacktestCase], predictions: list[list[float]], horizon: int) -> tuple:
-    return evaluate_return_predictions(cases, predictions, horizon=horizon)
-
-
-def _build_result(
-    symbol: str,
-    model: str,
-    cases: list[BacktestCase],
-    metrics,
-) -> Result:
+def _build_result(symbol: str, model: str, cases: list[BacktestCase], metrics) -> Result:
+    if not cases:
+        raise ValueError("benchmark produced no cases")
+    horizon = len(cases[0].actual)
     predictions = [case.predicted for case in cases]
     naive_predictions = naive_last_close_predictions(cases)
     naive_metrics = evaluate_predictions(cases, naive_predictions)
-    return_metrics = _evaluate_returns(cases, predictions, len(cases[0].actual))
-    naive_return_metrics = _evaluate_returns(cases, naive_predictions, len(cases[0].actual))
+    return_metrics = evaluate_return_predictions(cases, predictions, horizon=horizon)
+    naive_return_metrics = evaluate_return_predictions(cases, naive_predictions, horizon=horizon)
     return Result(
-        symbol, model, metrics.cases, metrics.mae, metrics.rmse,
-        metrics.mape, metrics.smape, metrics.directional_accuracy,
-        return_metrics.return_mae, return_metrics.return_rmse,
-        return_metrics.directional_accuracy, return_metrics.precision,
-        return_metrics.recall, return_metrics.f1, return_metrics.information_coefficient,
-        naive_metrics.mae, naive_metrics.rmse, naive_metrics.mape, naive_metrics.smape,
-        naive_return_metrics.return_mae, naive_return_metrics.return_rmse,
+        symbol=symbol,
+        model=model,
+        cases=metrics.cases,
+        horizon=horizon,
+        mae=metrics.mae,
+        rmse=metrics.rmse,
+        mape=metrics.mape,
+        smape=metrics.smape,
+        directional_accuracy=metrics.directional_accuracy,
+        return_mae=return_metrics.return_mae,
+        return_rmse=return_metrics.return_rmse,
+        return_directional_accuracy=return_metrics.directional_accuracy,
+        precision=return_metrics.precision,
+        recall=return_metrics.recall,
+        f1=return_metrics.f1,
+        information_coefficient=return_metrics.information_coefficient,
+        naive_mae=naive_metrics.mae,
+        naive_rmse=naive_metrics.rmse,
+        naive_mape=naive_metrics.mape,
+        naive_smape=naive_metrics.smape,
+        naive_return_mae=naive_return_metrics.return_mae,
+        naive_return_rmse=naive_return_metrics.return_rmse,
     )
 
 
@@ -106,38 +112,24 @@ def _print_metric_block(result: Result) -> None:
     f1_text = f"{result.f1 * 100:.2f}%" if result.f1 is not None else "N/A"
     ic_text = f"{result.information_coefficient:.4f}" if result.information_coefficient is not None else "N/A"
     print(
-        f"  {result.model}: cases={result.cases} "
-        f"MAE={result.mae:.4f} RMSE={result.rmse:.4f} MAPE={mape_text}"
+        f"  {result.model}: cases={result.cases} MAE={result.mae:.4f} "
+        f"RMSE={result.rmse:.4f} MAPE={mape_text}"
     )
     print(
         f"    return@{result.horizon}d: MAE={return_mae_text} RMSE={return_rmse_text} "
         f"direction={direction_text} precision={precision_text} recall={recall_text} "
         f"F1={f1_text} IC={ic_text}"
     )
-    if result.mape is not None and result.naive_mape is not None:
-        mape_change = f"{result.mape - result.naive_mape:+.4f}pp"
-    else:
-        mape_change = "N/A"
-    if result.return_mae is not None and result.naive_return_mae is not None:
-        return_mae_change = f"{(result.return_mae - result.naive_return_mae) * 100:+.4f}pp"
-    else:
-        return_mae_change = "N/A"
+    mape_change = f"{result.mape - result.naive_mape:+.4f}pp" if result.mape is not None and result.naive_mape is not None else "N/A"
+    return_mae_change = (
+        f"{(result.return_mae - result.naive_return_mae) * 100:+.4f}pp"
+        if result.return_mae is not None and result.naive_return_mae is not None else "N/A"
+    )
     print(
         f"    vs naive: MAE {result.mae - result.naive_mae:+.4f}, "
         f"RMSE {result.rmse - result.naive_rmse:+.4f}, MAPE {mape_change}, "
         f"return MAE {return_mae_change}"
     )
-
-
-@dataclass(frozen=True)
-class ResultWithHorizon(Result):
-    @property
-    def horizon(self) -> int:
-        return self._horizon
-
-
-# Keep Result simple and attach the benchmark horizon without changing its public constructor shape.
-Result.horizon = property(lambda self: getattr(self, "_benchmark_horizon", 0))
 
 
 def _summarize(results: list[Result]) -> None:
@@ -165,10 +157,7 @@ def _summarize(results: list[Result]) -> None:
         print(f"  Stocks beating naive on RMSE: {sum(value < 0 for value in rmse_changes)}/{len(rows)}")
         if return_mae_changes:
             print(f"  Mean return MAE change vs naive: {sum(return_mae_changes) / len(return_mae_changes) * 100:+.4f}pp")
-            print(
-                f"  Stocks beating naive on return MAE: "
-                f"{sum(value < 0 for value in return_mae_changes)}/{len(return_mae_changes)}"
-            )
+            print(f"  Stocks beating naive on return MAE: {sum(value < 0 for value in return_mae_changes)}/{len(return_mae_changes)}")
         direction_values = [r.return_directional_accuracy for r in rows if r.return_directional_accuracy is not None]
         f1_values = [r.f1 for r in rows if r.f1 is not None]
         ic_values = [r.information_coefficient for r in rows if r.information_coefficient is not None]
@@ -181,26 +170,17 @@ def _summarize(results: list[Result]) -> None:
 
 
 def _run_chronos(symbol: str, args: argparse.Namespace, adapter: Chronos2Adapter, db) -> Result:
-    observations = load_close_observations(
-        db, symbol, interval=args.interval, source=args.source, limit=args.history_limit
-    )
+    observations = load_close_observations(db, symbol, interval=args.interval, source=args.source, limit=args.history_limit)
     cases, metrics = run_backtest(
         adapter, symbol, observations,
-        context_length=args.context_length,
-        horizon=args.horizon,
-        stride=args.stride,
-        start_case=args.start_case,
-        max_cases=args.max_cases,
+        context_length=args.context_length, horizon=args.horizon,
+        stride=args.stride, start_case=args.start_case, max_cases=args.max_cases,
     )
-    result = _build_result(symbol, "Chronos-2", cases, metrics)
-    object.__setattr__(result, "_benchmark_horizon", args.horizon)
-    return result
+    return _build_result(symbol, "Chronos-2", cases, metrics)
 
 
 def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapter, db) -> Result:
-    observations = load_ohlcv_observations(
-        db, symbol, interval=args.interval, source=args.source, limit=args.history_limit
-    )
+    observations = load_ohlcv_observations(db, symbol, interval=args.interval, source=args.source, limit=args.history_limit)
     minimum = args.context_length + args.horizon
     if len(observations) < minimum:
         raise ValueError(f"{symbol}: {len(observations)} OHLCV observations; need {minimum}")
@@ -222,20 +202,15 @@ def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapt
             amounts=[item.amount for item in context],
         )
         forecast = adapter.forecast(request)
-        cases.append(
-            BacktestCase(
-                cutoff_timestamp=context[-1].timestamp,
-                actual=[item.close for item in future],
-                predicted=forecast.median,
-                cutoff_close=context[-1].close,
-            )
-        )
+        cases.append(BacktestCase(
+            cutoff_timestamp=context[-1].timestamp,
+            actual=[item.close for item in future],
+            predicted=forecast.median,
+            cutoff_close=context[-1].close,
+        ))
         cutoff_end += args.stride
 
-    metrics = evaluate_cases(cases)
-    result = _build_result(symbol, f"Kronos-small(seed={args.kronos_seed})", cases, metrics)
-    object.__setattr__(result, "_benchmark_horizon", args.horizon)
-    return result
+    return _build_result(symbol, f"Kronos-small(seed={args.kronos_seed})", cases, evaluate_cases(cases))
 
 
 def main() -> None:
@@ -274,10 +249,7 @@ def main() -> None:
     db = SessionLocal()
     results: list[Result] = []
     chronos = Chronos2Adapter(device_map=args.device_map)
-    # KronosSmallAdapter accepts a device argument, not Chronos' device_map.
-    kronos = None if args.skip_kronos else KronosSmallAdapter(
-        device=args.device_map, seed=args.kronos_seed
-    )
+    kronos = None if args.skip_kronos else KronosSmallAdapter(device=args.device_map, seed=args.kronos_seed)
     try:
         for index, symbol in enumerate(symbols, start=1):
             print(f"\n[{index}/{len(symbols)}] {symbol}")
@@ -287,7 +259,6 @@ def main() -> None:
                 print(f"  Chronos-2: MAE={result.mae:.4f} vs naive={result.naive_mae:.4f}")
             except Exception as exc:
                 print(f"  Chronos-2 ERROR: {exc}")
-
             if kronos is not None:
                 try:
                     result = _run_kronos(symbol, args, kronos, db)
