@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import sqrt
+import random
 
 from .backtest import BacktestCase
+
+
+BASELINE_LAST_CLOSE = "last_close"
+BASELINE_PREVIOUS_RETURN = "previous_return"
+BASELINE_DRIFT = "drift"
+BASELINE_MOVING_AVERAGE_20 = "moving_average_20"
 
 
 @dataclass(frozen=True)
@@ -27,6 +34,15 @@ class ReturnBenchmarkMetrics:
     recall: float | None
     f1: float | None
     information_coefficient: float | None
+
+
+@dataclass(frozen=True)
+class BootstrapSummary:
+    n: int
+    mean: float
+    std: float | None
+    ci_low: float | None
+    ci_high: float | None
 
 
 def evaluate_predictions(cases: list[BacktestCase], predictions: list[list[float]]) -> BenchmarkMetrics:
@@ -146,6 +162,98 @@ def evaluate_return_predictions(
     )
 
 
+def _context_or_fail(case: BacktestCase) -> list[float]:
+    if not case.context_closes:
+        raise ValueError("backtest case is missing context_closes required by this baseline")
+    if len(case.context_closes) < 2:
+        raise ValueError("at least two context closes are required for this baseline")
+    return case.context_closes
+
+
 def naive_last_close_predictions(cases: list[BacktestCase]) -> list[list[float]]:
     """Forecast every future point at the cutoff close (last-value baseline)."""
     return [[case.cutoff_close for _ in case.actual] for case in cases]
+
+
+def previous_return_predictions(cases: list[BacktestCase]) -> list[list[float]]:
+    """Repeat the most recent one-session return and compound it forward."""
+    predictions: list[list[float]] = []
+    for case in cases:
+        context = _context_or_fail(case)
+        previous = context[-2]
+        last = context[-1]
+        if previous == 0:
+            predictions.append([last for _ in case.actual])
+            continue
+        last_return = last / previous - 1.0
+        row = [last * ((1.0 + last_return) ** step) for step in range(1, len(case.actual) + 1)]
+        predictions.append(row)
+    return predictions
+
+
+def drift_predictions(cases: list[BacktestCase]) -> list[list[float]]:
+    """Project the historical average absolute price change forward."""
+    predictions: list[list[float]] = []
+    for case in cases:
+        context = _context_or_fail(case)
+        increments = [context[index] - context[index - 1] for index in range(1, len(context))]
+        drift = sum(increments) / len(increments)
+        predictions.append([context[-1] + drift * step for step in range(1, len(case.actual) + 1)])
+    return predictions
+
+
+def moving_average_predictions(cases: list[BacktestCase], window: int = 20) -> list[list[float]]:
+    """Use the trailing simple moving average as a flat future-price baseline."""
+    if window < 1:
+        raise ValueError("moving-average window must be >= 1")
+    predictions: list[list[float]] = []
+    for case in cases:
+        context = _context_or_fail(case)
+        effective_window = min(window, len(context))
+        average = sum(context[-effective_window:]) / effective_window
+        predictions.append([average for _ in case.actual])
+    return predictions
+
+
+def baseline_predictions(cases: list[BacktestCase]) -> dict[str, list[list[float]]]:
+    return {
+        BASELINE_LAST_CLOSE: naive_last_close_predictions(cases),
+        BASELINE_PREVIOUS_RETURN: previous_return_predictions(cases),
+        BASELINE_DRIFT: drift_predictions(cases),
+        BASELINE_MOVING_AVERAGE_20: moving_average_predictions(cases, window=20),
+    }
+
+
+def bootstrap_mean_ci(
+    values: list[float],
+    *,
+    seed: int = 20260913,
+    resamples: int = 2000,
+) -> BootstrapSummary:
+    """Return mean, sample std and deterministic percentile bootstrap 95% CI."""
+    if not values:
+        return BootstrapSummary(0, float("nan"), None, None, None)
+    if len(values) == 1:
+        return BootstrapSummary(1, values[0], 0.0, values[0], values[0])
+    if resamples < 100:
+        raise ValueError("resamples must be >= 100")
+
+    mean = sum(values) / len(values)
+    sample_std = sqrt(sum((value - mean) ** 2 for value in values) / (len(values) - 1))
+    rng = random.Random(seed)
+    bootstrap_means: list[float] = []
+    for _ in range(resamples):
+        total = 0.0
+        for _ in values:
+            total += values[rng.randrange(len(values))]
+        bootstrap_means.append(total / len(values))
+    bootstrap_means.sort()
+    low_index = int(0.025 * (resamples - 1))
+    high_index = int(0.975 * (resamples - 1))
+    return BootstrapSummary(
+        n=len(values),
+        mean=mean,
+        std=sample_std,
+        ci_low=bootstrap_means[low_index],
+        ci_high=bootstrap_means[high_index],
+    )
