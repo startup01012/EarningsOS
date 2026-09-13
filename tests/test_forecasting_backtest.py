@@ -65,6 +65,49 @@ def test_run_backtest_never_passes_future_observations_to_adapter():
     assert cases[1].actual == [107.0, 108.0]
 
 
+def test_run_backtest_selects_historical_window():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    observations = [
+        PriceObservation(start + timedelta(days=i), float(100 + i))
+        for i in range(16)
+    ]
+    adapter = FixedAdapter([110, 111])
+
+    cases, metrics = run_backtest(
+        adapter,
+        "TEST",
+        observations,
+        context_length=5,
+        horizon=2,
+        stride=2,
+        start_case=2,
+        max_cases=2,
+    )
+
+    assert len(cases) == 2
+    assert metrics.cases == 2
+    assert adapter.requests[0].timestamps[-1] == observations[8].timestamp
+    assert adapter.requests[1].timestamps[-1] == observations[10].timestamp
+    assert cases[0].actual == [109.0, 110.0]
+    assert cases[1].actual == [111.0, 112.0]
+
+
+def test_run_backtest_rejects_invalid_start_case():
+    observations = [
+        PriceObservation(datetime(2026, 1, 1, tzinfo=timezone.utc), 100.0),
+        PriceObservation(datetime(2026, 1, 2, tzinfo=timezone.utc), 101.0),
+    ]
+    with pytest.raises(ValueError, match="start_case must be >= 0"):
+        run_backtest(
+            FixedAdapter([1, 2]),
+            "TEST",
+            observations,
+            context_length=1,
+            horizon=1,
+            start_case=-1,
+        )
+
+
 def test_run_backtest_requires_enough_observations():
     observations = [
         PriceObservation(datetime(2026, 1, 1, tzinfo=timezone.utc), 100.0),
