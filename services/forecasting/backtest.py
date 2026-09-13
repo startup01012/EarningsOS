@@ -11,9 +11,9 @@ from .price_series import PriceObservation, build_forecast_request
 @dataclass(frozen=True)
 class BacktestCase:
     cutoff_timestamp: datetime
-    cutoff_close: float
     actual: list[float]
     predicted: list[float]
+    cutoff_close: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,14 @@ class BacktestMetrics:
     mape: float | None
     smape: float | None
     directional_accuracy: float | None
+
+
+def _direction(value: float, reference: float) -> int:
+    if value > reference:
+        return 1
+    if value < reference:
+        return -1
+    return 0
 
 
 def evaluate_cases(cases: list[BacktestCase]) -> BacktestMetrics:
@@ -53,10 +61,12 @@ def evaluate_cases(cases: list[BacktestCase]) -> BacktestMetrics:
             denominator = abs(actual) + abs(predicted)
             if denominator != 0:
                 smape_errors.append(2 * abs(error) / denominator)
-            actual_direction = actual > case.cutoff_close
-            predicted_direction = predicted > case.cutoff_close
-            direction_hits += int(predicted_direction == actual_direction)
-            direction_total += 1
+            actual_direction = _direction(actual, case.cutoff_close)
+            predicted_direction = _direction(predicted, case.cutoff_close)
+            direction_hits += int(
+                actual_direction != 0 and predicted_direction == actual_direction
+            )
+            direction_total += int(actual_direction != 0)
 
     return BacktestMetrics(
         cases=len(cases),
@@ -113,9 +123,9 @@ def run_backtest(
         cases.append(
             BacktestCase(
                 cutoff_timestamp=context[-1].timestamp,
-                cutoff_close=context[-1].close,
                 actual=[item.close for item in future],
                 predicted=result.median,
+                cutoff_close=context[-1].close,
             )
         )
 
