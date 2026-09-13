@@ -7,26 +7,18 @@ from pathlib import Path
 import pandas as pd
 
 from apps.api.db.session import SessionLocal
-from services.forecasting.backtest import evaluate_cases, run_backtest
+from services.forecasting.backtest import BacktestCase, evaluate_cases, run_backtest
 from services.forecasting.benchmarks import evaluate_predictions, naive_last_close_predictions
+from services.forecasting.base import ForecastRequest
 from services.forecasting.chronos import Chronos2Adapter
 from services.forecasting.kronos import KronosSmallAdapter
 from services.forecasting.kronos_loader import load_ohlcv_observations
 from services.forecasting.price_loader import load_close_observations
-from services.forecasting.base import ForecastRequest
 
 
 DEFAULT_SYMBOLS = (
-    "RELIANCE",
-    "TCS",
-    "INFY",
-    "HDFCBANK",
-    "ICICIBANK",
-    "AXISBANK",
-    "BHARTIARTL",
-    "ITC",
-    "LT",
-    "SBIN",
+    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
+    "AXISBANK", "BHARTIARTL", "ITC", "LT", "SBIN",
 )
 
 
@@ -66,17 +58,18 @@ def _load_default_symbols(path: str) -> list[str]:
 
 
 def _print_metric_block(result: Result) -> None:
-    print(f"  {result.model}: cases={result.cases} "
-          f"MAE={result.mae:.4f} "
-          f"RMSE={result.rmse:.4f} "
-          f"MAPE={result.mape:.4f}%" if result.mape is not None else "  MAPE=N/A")
+    mape_text = f"{result.mape:.4f}%" if result.mape is not None else "N/A"
+    print(
+        f"  {result.model}: cases={result.cases} "
+        f"MAE={result.mae:.4f} RMSE={result.rmse:.4f} MAPE={mape_text}"
+    )
+    if result.mape is not None and result.naive_mape is not None:
+        mape_change = f"{result.mape - result.naive_mape:+.4f}pp"
+    else:
+        mape_change = "N/A"
     print(
         f"    vs naive: MAE {result.mae - result.naive_mae:+.4f}, "
-        f"RMSE {result.rmse - result.naive_rmse:+.4f}, "
-        +MAPE "
-        f"{result.mape - result.naive_mape:+.4f}pp"
-        if result.mape is not None and result.naive_mape is not None
-        else "    vs naive: percentage metrics N/A"
+        f"RMSE {result.rmse - result.naive_rmse:+.4f}, MAPE {mape_change}"
     )
 
 
@@ -92,31 +85,24 @@ def _summarize(results: list[Result]) -> None:
         rows = [r for r in results if r.model == model]
         if not rows:
             continue
+        mae_changes = [r.mae - r.naive_mae for r in rows]
+        rmse_changes = [r.rmse - r.naive_rmse for r in rows]
         print(f"\n{model}")
         print(f"  Stocks evaluated: {len(rows)}")
         print(f"  Mean MAE: {sum(r.mae for r in rows) / len(rows):.4f}")
         print(f"  Mean RMSE: {sum(r.rmse for r in rows) / len(rows):.4f}")
-        improvements = [r.mae - r.naive_mae for r in rows]
-        rmse_improvements = [r.rmse - r.naive_rmse for r in rows]
-        print(f"  Mean MAE change vs naive: {sum(improvements) / len(improvements):+.4f}")
-        print(f"  Mean RMSE change vs naive: {sum(rmse_improvements) / len(rmse_improvements):+.4f}")
-        print(f"  Stocks beating naive on MAE: {sum(value < 0 for value in improvements)}/{len(rows)}")
-        print(f"  Stocks beating naive on RMSE: {sum(value < 0 for value in rmse_improvements)}/{len(rows)}")
+        print(f"  Mean MAE change vs naive: {sum(mae_changes) / len(rows):+.4f}")
+        print(f"  Mean RMSE change vs naive: {sum(rmse_changes) / len(rows):+.4f}")
+        print(f"  Stocks beating naive on MAE: {sum(value < 0 for value in mae_changes)}/{len(rows)}")
+        print(f"  Stocks beating naive on RMSE: {sum(value < 0 for value in rmse_changes)}/{len(rows)}")
 
 
-def _run_chronos(
-    symbol: str,
-    args: argparse.Namespace,
-    adapter: Chronos2Adapter,
-    db,
-) -> Result:
+def _run_chronos(symbol: str, args: argparse.Namespace, adapter: Chronos2Adapter, db) -> Result:
     observations = load_close_observations(
         db, symbol, interval=args.interval, source=args.source, limit=args.history_limit
     )
     cases, metrics = run_backtest(
-        adapter,
-        symbol,
-        observations,
+        adapter, symbol, observations,
         context_length=args.context_length,
         horizon=args.horizon,
         stride=args.stride,
@@ -125,44 +111,25 @@ def _run_chronos(
     )
     naive_metrics = evaluate_predictions(cases, naive_last_close_predictions(cases))
     return Result(
-        symbol=symbol,
-        model="Chronos-2",
-        cases=metrics.cases,
-        mae=metrics.mae,
-        rmse=metrics.rmse,
-        mape=metrics.mape,
-        smape=metrics.smape,
-        directional_accuracy=metrics.directional_accuracy,
-        naive_mae=naive_metrics.mae,
-        naive_rmse=naive_metrics.rmse,
-        naive_mape=naive_metrics.mape,
-        naive_smape=naive_metrics.smape,
+        symbol, "Chronos-2", metrics.cases, metrics.mae, metrics.rmse,
+        metrics.mape, metrics.smape, metrics.directional_accuracy,
+        naive_metrics.mae, naive_metrics.rmse, naive_metrics.mape, naive_metrics.smape,
     )
 
 
-def _run_kronos(
-    symbol: str,
-    args: argparse.Namespace,
-    adapter: KronosSmallAdapter,
-    db,
-) -> Result:
+def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapter, db) -> Result:
     observations = load_ohlcv_observations(
         db, symbol, interval=args.interval, source=args.source, limit=args.history_limit
     )
-    if len(observations) < args.context_length + args.horizon:
-        raise ValueError(
-            f"{symbol}: only {len(observations)} OHLCV observations; "
-            f"need at least {args.context_length + args.horizon}"
-        )
+    minimum = args.context_length + args.horizon
+    if len(observations) < minimum:
+        raise ValueError(f"{symbol}: {len(observations)} OHLCV observations; need {minimum}")
 
-    cases: list = []
-    max_start = len(observations) - args.context_length - args.horizon
-    start = args.start_case
-    while start <= max_start and len(cases) < args.max_cases:
-        context = observations[start : start + args.context_length]
-        actual = observations[
-            start + args.context_length : start + args.context_length + args.horizon
-        ]
+    cases: list[BacktestCase] = []
+    cutoff_end = args.context_length + args.start_case * args.stride
+    while cutoff_end + args.horizon <= len(observations) and len(cases) < args.max_cases:
+        context = observations[cutoff_end - args.context_length : cutoff_end]
+        future = observations[cutoff_end : cutoff_end + args.horizon]
         request = ForecastRequest(
             symbol=symbol,
             values=[item.close for item in context],
@@ -174,32 +141,24 @@ def _run_kronos(
             volumes=[item.volume for item in context],
             amounts=[item.amount for item in context],
         )
-        result = adapter.forecast(request, seed=args.kronos_seed)
+        forecast = adapter.forecast(request, seed=args.kronos_seed)
         cases.append(
-            type("Case", (), {
-                "cutoff_timestamp": context[-1].timestamp,
-                "actual": [item.close for item in actual],
-                "predicted": result.values,
-                "cutoff_close": context[-1].close,
-            })()
+            BacktestCase(
+                cutoff_timestamp=context[-1].timestamp,
+                actual=[item.close for item in future],
+                predicted=forecast.values,
+                cutoff_close=context[-1].close,
+            )
         )
-        start += args.stride
+        cutoff_end += args.stride
 
     metrics = evaluate_cases(cases)
     naive_metrics = evaluate_predictions(cases, naive_last_close_predictions(cases))
     return Result(
-        symbol=symbol,
-        model=f"Kronos-small(seed={args.kronos_seed})",
-        cases=metrics.cases,
-        mae=metrics.mae,
-        rmse=metrics.rmse,
-        mape=metrics.mape,
-        smape=metrics.smape,
-        directional_accuracy=metrics.directional_accuracy,
-        naive_mae=naive_metrics.mae,
-        naive_rmse=naive_metrics.rmse,
-        naive_mape=naive_metrics.mape,
-        naive_smape=naive_metrics.smape,
+        symbol, f"Kronos-small(seed={args.kronos_seed})", metrics.cases,
+        metrics.mae, metrics.rmse, metrics.mape, metrics.smape,
+        metrics.directional_accuracy, naive_metrics.mae, naive_metrics.rmse,
+        naive_metrics.mape, naive_metrics.smape,
     )
 
 
@@ -220,10 +179,10 @@ def main() -> None:
     parser.add_argument("--skip-kronos", action="store_true")
     args = parser.parse_args()
 
-    if args.context_length < 1 or args.horizon < 1 or args.stride < 1:
-        raise ValueError("context length, horizon, and stride must be >= 1")
+    if args.context_length < 2 or args.horizon < 1 or args.stride < 1:
+        raise ValueError("context-length must be >= 2; horizon and stride must be >= 1")
     if args.start_case < 0 or args.max_cases < 1:
-        raise ValueError("start case must be >= 0 and max cases must be >= 1")
+        raise ValueError("start-case must be >= 0 and max-cases must be >= 1")
     if args.history_limit < args.context_length + args.horizon:
         raise ValueError("history-limit is too small for context-length + horizon")
 
@@ -244,17 +203,17 @@ def main() -> None:
         for index, symbol in enumerate(symbols, start=1):
             print(f"\n[{index}/{len(symbols)}] {symbol}")
             try:
-                chronos_result = _run_chronos(symbol, args, chronos, db)
-                results.append(chronos_result)
-                print(f"  Chronos-2 MAE={chronos_result.mae:.4f} vs naive={chronos_result.naive_mae:.4f}")
+                result = _run_chronos(symbol, args, chronos, db)
+                results.append(result)
+                print(f"  Chronos-2: MAE={result.mae:.4f} vs naive={result.naive_mae:.4f}")
             except Exception as exc:
                 print(f"  Chronos-2 ERROR: {exc}")
 
             if kronos is not None:
                 try:
-                    kronos_result = _run_kronos(symbol, args, kronos, db)
-                    results.append(kronos_result)
-                    print(f"  Kronos-small MAE={kronos_result.mae:.4f} vs naive={kronos_result.naive_mae:.4f}")
+                    result = _run_kronos(symbol, args, kronos, db)
+                    results.append(result)
+                    print(f"  Kronos-small: MAE={result.mae:.4f} vs naive={result.naive_mae:.4f}")
                 except Exception as exc:
                     print(f"  Kronos-small ERROR: {exc}")
     finally:
