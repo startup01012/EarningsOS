@@ -31,50 +31,34 @@ class Stock(Base):
     industry: Mapped[str | None] = mapped_column(String(150), nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="INR")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     price_bars: Mapped[list["PriceBar"]] = relationship(back_populates="stock", cascade="all, delete-orphan")
     news_articles: Mapped[list["NewsArticle"]] = relationship(back_populates="stock")
     forecasts: Mapped[list["Forecast"]] = relationship(back_populates="stock")
     earnings_events: Mapped[list["EarningsEvent"]] = relationship(back_populates="stock")
     intelligence_signals: Mapped[list["IntelligenceSignal"]] = relationship(back_populates="stock")
-    index_memberships: Mapped[list["IndexMembership"]] = relationship(
-        back_populates="stock", cascade="all, delete-orphan"
-    )
+    index_memberships: Mapped[list["IndexMembership"]] = relationship(back_populates="stock", cascade="all, delete-orphan")
+    sentiment_features: Mapped[list["SentimentFeature"]] = relationship(back_populates="stock", cascade="all, delete-orphan")
 
 
 class IndexMembership(Base):
     __tablename__ = "index_memberships"
-
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    stock_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True
-    )
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     index_name: Mapped[str] = mapped_column(String(100), index=True)
     effective_from: Mapped[Date] = mapped_column(Date, index=True)
     effective_to: Mapped[Date | None] = mapped_column(Date, nullable=True, index=True)
     source: Mapped[str] = mapped_column(String(255))
-
     stock: Mapped["Stock"] = relationship(back_populates="index_memberships")
-
-    __table_args__ = (
-        UniqueConstraint(
-            "stock_id", "index_name", "effective_from", name="uq_index_membership"
-        ),
-    )
+    __table_args__ = (UniqueConstraint("stock_id", "index_name", "effective_from", name="uq_index_membership"),)
 
 
 class PriceBar(Base):
     __tablename__ = "price_bars"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    stock_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True
-    )
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     interval: Mapped[str] = mapped_column(String(20))
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     open: Mapped[Decimal] = mapped_column(Numeric(20, 6))
@@ -85,18 +69,13 @@ class PriceBar(Base):
     traded_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
     source: Mapped[str] = mapped_column(String(100))
     stock: Mapped["Stock"] = relationship(back_populates="price_bars")
-
-    __table_args__ = (
-        UniqueConstraint("stock_id", "interval", "timestamp", "source", name="uq_price_bar"),
-    )
+    __table_args__ = (UniqueConstraint("stock_id", "interval", "timestamp", "source", name="uq_price_bar"),)
 
 
 class NewsArticle(Base):
     __tablename__ = "news_articles"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    stock_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    stock_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(Text)
     url: Mapped[str] = mapped_column(Text, unique=True)
     source: Mapped[str] = mapped_column(String(255))
@@ -105,9 +84,7 @@ class NewsArticle(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     stock: Mapped["Stock | None"] = relationship(back_populates="news_articles")
-    sentiment_scores: Mapped[list["SentimentScore"]] = relationship(
-        back_populates="article", cascade="all, delete-orphan"
-    )
+    sentiment_scores: Mapped[list["SentimentScore"]] = relationship(back_populates="article", cascade="all, delete-orphan")
 
 
 class ModelRegistry(Base):
@@ -128,9 +105,7 @@ class ModelRegistry(Base):
 class ModelRun(Base):
     __tablename__ = "model_runs"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    model_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("model_registry.id", ondelete="CASCADE"), index=True
-    )
+    model_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("model_registry.id", ondelete="CASCADE"), index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(30))
@@ -144,9 +119,7 @@ class ModelRun(Base):
 class SentimentScore(Base):
     __tablename__ = "sentiment_scores"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    article_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("news_articles.id", ondelete="CASCADE"), index=True
-    )
+    article_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("news_articles.id", ondelete="CASCADE"), index=True)
     model_name: Mapped[str] = mapped_column(String(150))
     label: Mapped[str] = mapped_column(String(30))
     score: Mapped[Decimal] = mapped_column(Numeric(10, 6))
@@ -157,15 +130,39 @@ class SentimentScore(Base):
     article: Mapped["NewsArticle"] = relationship(back_populates="sentiment_scores")
 
 
+class SentimentFeature(Base):
+    __tablename__ = "sentiment_features"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(30), index=True)
+    feature_date: Mapped[Date] = mapped_column(Date, index=True)
+    model_name: Mapped[str] = mapped_column(String(150))
+    article_count: Mapped[int] = mapped_column(Integer)
+    positive_ratio: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    negative_ratio: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    neutral_ratio: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    mean_score: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    sentiment_balance: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    last_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    article_count_3d: Mapped[int] = mapped_column(Integer)
+    article_count_7d: Mapped[int] = mapped_column(Integer)
+    article_count_14d: Mapped[int] = mapped_column(Integer)
+    article_count_30d: Mapped[int] = mapped_column(Integer)
+    sentiment_balance_3d: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    sentiment_balance_7d: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    sentiment_balance_14d: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    sentiment_balance_30d: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    sentiment_momentum_3d_vs_7d: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    stock: Mapped["Stock"] = relationship(back_populates="sentiment_features")
+    __table_args__ = (UniqueConstraint("stock_id", "feature_date", "model_name", name="uq_sentiment_feature"),)
+
+
 class Forecast(Base):
     __tablename__ = "forecasts"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    model_run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("model_runs.id", ondelete="CASCADE"), index=True
-    )
-    stock_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True
-    )
+    model_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("model_runs.id", ondelete="CASCADE"), index=True)
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     target_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     horizon: Mapped[str] = mapped_column(String(50))
@@ -181,9 +178,7 @@ class Forecast(Base):
 class EarningsEvent(Base):
     __tablename__ = "earnings_events"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    stock_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True
-    )
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     fiscal_period: Mapped[str] = mapped_column(String(50))
     event_date: Mapped[Date] = mapped_column(Date, index=True)
     announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -201,9 +196,7 @@ class EarningsEvent(Base):
 class IntelligenceSignal(Base):
     __tablename__ = "intelligence_signals"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    stock_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True
-    )
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     horizon: Mapped[str] = mapped_column(String(50))
     signal: Mapped[str] = mapped_column(String(50))
