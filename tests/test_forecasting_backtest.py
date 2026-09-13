@@ -28,7 +28,7 @@ class FixedAdapter(ForecastAdapter):
 
 def test_evaluate_cases_metrics():
     cases = [
-        BacktestCase(datetime(2026, 1, 1, tzinfo=timezone.utc), 100, [101, 99], [100, 100]),
+        BacktestCase(datetime(2026, 1, 1, tzinfo=timezone.utc), [101, 99], [100, 100], 100),
     ]
     metrics = evaluate_cases(cases)
     assert metrics.cases == 1
@@ -37,12 +37,12 @@ def test_evaluate_cases_metrics():
     assert metrics.rmse == pytest.approx(1.0)
     assert metrics.mape == pytest.approx((1 / 101 + 1 / 99) / 2 * 100)
     assert metrics.smape == pytest.approx((2 / 201 + 2 / 199) / 2 * 100)
-    assert metrics.directional_accuracy == pytest.approx(0.5)
+    assert metrics.directional_accuracy == pytest.approx(0.0)
 
 
 def test_naive_last_close_predictions_use_cutoff_close():
     cases = [
-        BacktestCase(datetime(2026, 1, 1, tzinfo=timezone.utc), 100, [101, 99], [100, 100]),
+        BacktestCase(datetime(2026, 1, 1, tzinfo=timezone.utc), [101, 99], [100, 100], 100),
     ]
     predictions = naive_last_close_predictions(cases)
     assert predictions == [[100, 100]]
