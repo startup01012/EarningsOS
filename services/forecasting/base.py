@@ -11,6 +11,11 @@ class ForecastRequest:
     values: list[float]
     timestamps: list[datetime]
     horizon: int
+    opens: list[float] | None = None
+    highs: list[float] | None = None
+    lows: list[float] | None = None
+    volumes: list[float] | None = None
+    amounts: list[float] | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
@@ -21,6 +26,15 @@ class ForecastRequest:
             raise ValueError("at least two observations are required")
         if self.horizon < 1:
             raise ValueError("horizon must be >= 1")
+        for name, series in (
+            ("opens", self.opens),
+            ("highs", self.highs),
+            ("lows", self.lows),
+            ("volumes", self.volumes),
+            ("amounts", self.amounts),
+        ):
+            if series is not None and len(series) != len(self.values):
+                raise ValueError(f"{name} length must equal values length")
 
 
 @dataclass(frozen=True)
