@@ -84,10 +84,16 @@ class KronosSmallAdapter(ForecastAdapter):
                 "amount": amounts,
             }
         )
-        x_timestamp = pd.Series(pd.to_datetime(request.timestamps, utc=True).tz_localize(None))
-        y_timestamp = pd.bdate_range(
-            start=x_timestamp.iloc[-1] + pd.Timedelta(days=1),
-            periods=request.horizon,
+        x_timestamp = pd.Series(
+            pd.to_datetime(request.timestamps, utc=True).tz_localize(None),
+            name="timestamps",
+        )
+        y_timestamp = pd.Series(
+            pd.bdate_range(
+                start=x_timestamp.iloc[-1] + pd.Timedelta(days=1),
+                periods=request.horizon,
+            ),
+            name="timestamps",
         )
 
         predictor = self._load()
