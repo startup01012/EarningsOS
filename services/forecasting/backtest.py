@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import sqrt
 
 from .base import ForecastAdapter
@@ -9,7 +10,7 @@ from .price_series import PriceObservation, build_forecast_request
 
 @dataclass(frozen=True)
 class BacktestCase:
-    cutoff_timestamp: object
+    cutoff_timestamp: datetime
     actual: list[float]
     predicted: list[float]
 
@@ -22,14 +23,6 @@ class BacktestMetrics:
     rmse: float
     mape: float | None
     directional_accuracy: float | None
-
-
-def _directional_accuracy(actual: list[float], predicted: list[float], last_close: float) -> float | None:
-    if not actual:
-        return None
-    actual_directions = [value > last_close for value in actual]
-    predicted_directions = [value > last_close for value in predicted]
-    return sum(a == p for a, p in zip(actual_directions, predicted_directions)) / len(actual)
 
 
 def evaluate_cases(cases: list[BacktestCase], *, baseline_closes: list[float]) -> BacktestMetrics:
@@ -56,7 +49,7 @@ def evaluate_cases(cases: list[BacktestCase], *, baseline_closes: list[float]) -
             squared_errors.append(error * error)
             if actual != 0:
                 percentage_errors.append(abs(error) / abs(actual))
-            direction_hits += predicted > baseline == (actual > baseline)
+            direction_hits += int((predicted > baseline) == (actual > baseline))
             direction_total += 1
 
     return BacktestMetrics(
@@ -71,6 +64,7 @@ def evaluate_cases(cases: list[BacktestCase], *, baseline_closes: list[float]) -
 
 def run_backtest(
     adapter: ForecastAdapter,
+    symbol: str,
     observations: list[PriceObservation],
     *,
     context_length: int = 256,
@@ -105,14 +99,9 @@ def run_backtest(
     cutoff_end = context_length
 
     while cutoff_end + horizon <= len(ordered):
-        context = ordered[max(0, cutoff_end - context_length) : cutoff_end]
+        context = ordered[cutoff_end - context_length : cutoff_end]
         future = ordered[cutoff_end : cutoff_end + horizon]
-        request = build_forecast_request(
-            ordered[0].timestamp.strftime("%Y%m%d") if False else "BACKTEST",
-            context,
-            horizon,
-        )
-        request = build_forecast_request("BACKTEST", context, horizon)
+        request = build_forecast_request(symbol, context, horizon)
         result = adapter.forecast(request)
         cases.append(
             BacktestCase(
