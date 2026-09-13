@@ -141,7 +141,7 @@ def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapt
             volumes=[item.volume for item in context],
             amounts=[item.amount for item in context],
         )
-        forecast = adapter.forecast(request, seed=args.kronos_seed)
+        forecast = adapter.forecast(request)
         cases.append(
             BacktestCase(
                 cutoff_timestamp=context[-1].timestamp,
@@ -199,7 +199,9 @@ def main() -> None:
     results: list[Result] = []
     chronos = Chronos2Adapter(device_map=args.device_map)
     # KronosSmallAdapter accepts a device argument, not Chronos' device_map.
-    kronos = None if args.skip_kronos else KronosSmallAdapter(device=args.device_map)
+    kronos = None if args.skip_kronos else KronosSmallAdapter(
+        device=args.device_map, seed=args.kronos_seed
+    )
     try:
         for index, symbol in enumerate(symbols, start=1):
             print(f"\n[{index}/{len(symbols)}] {symbol}")
