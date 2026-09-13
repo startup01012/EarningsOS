@@ -38,10 +38,19 @@ class Chronos2Adapter(ForecastAdapter):
         import pandas as pd
 
         pipeline = self._load()
+
+        # Chronos-2's dataframe normalizer currently calls ``to_numpy().view("int64")``
+        # on timestamps. Passing a timezone-aware pandas extension array can become
+        # object dtype with the installed pandas/Chronos combination, which causes:
+        # ``TypeError: Cannot change data-type for array of references.``
+        # Keep the timestamps in UTC, then remove the timezone while preserving the
+        # instant. This gives Chronos a concrete datetime64[ns] ndarray that its
+        # normalizer can safely reinterpret as int64 nanoseconds.
+        timestamps = pd.to_datetime(request.timestamps, utc=True).tz_localize(None)
         context_df = pd.DataFrame(
             {
                 "item_id": [request.symbol] * len(request.values),
-                "timestamp": pd.to_datetime(request.timestamps, utc=True),
+                "timestamp": timestamps,
                 "target": request.values,
             }
         )
