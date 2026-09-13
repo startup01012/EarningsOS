@@ -45,6 +45,11 @@ def test_kronos_adapter_validates_max_context():
         KronosSmallAdapter(max_context=1)
 
 
+def test_kronos_adapter_validates_seed():
+    with pytest.raises(ValueError, match="seed must be >= 0"):
+        KronosSmallAdapter(seed=-1)
+
+
 def test_kronos_passes_timestamps_as_series(monkeypatch):
     captured = {}
 
@@ -62,3 +67,30 @@ def test_kronos_passes_timestamps_as_series(monkeypatch):
     assert captured["x_timestamp"].name == "timestamps"
     assert captured["y_timestamp"].name == "timestamps"
     assert len(captured["y_timestamp"]) == 2
+
+
+def test_kronos_seed_is_applied_before_prediction(monkeypatch):
+    calls = []
+
+    class FakeTorch:
+        @staticmethod
+        def manual_seed(seed):
+            calls.append(("manual_seed", seed))
+
+        class cuda:
+            @staticmethod
+            def is_available():
+                return False
+
+    class FakePredictor:
+        def predict(self, **kwargs):
+            calls.append(("predict", kwargs["pred_len"]))
+            return pd.DataFrame({"close": [103.0, 104.0]})
+
+    adapter = KronosSmallAdapter(seed=12345)
+    adapter._predictor = FakePredictor()
+    monkeypatch.setitem(__import__("sys").modules, "torch", FakeTorch)
+
+    adapter.forecast(_request())
+
+    assert calls == [("manual_seed", 12345), ("predict", 2)]
