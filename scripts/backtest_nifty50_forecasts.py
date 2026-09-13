@@ -8,7 +8,11 @@ import pandas as pd
 
 from apps.api.db.session import SessionLocal
 from services.forecasting.backtest import BacktestCase, evaluate_cases, run_backtest
-from services.forecasting.benchmarks import evaluate_predictions, naive_last_close_predictions
+from services.forecasting.benchmarks import (
+    evaluate_predictions,
+    evaluate_return_predictions,
+    naive_last_close_predictions,
+)
 from services.forecasting.base import ForecastRequest
 from services.forecasting.chronos import Chronos2Adapter
 from services.forecasting.kronos import KronosSmallAdapter
@@ -32,10 +36,19 @@ class Result:
     mape: float | None
     smape: float | None
     directional_accuracy: float | None
+    return_mae: float | None
+    return_rmse: float | None
+    return_directional_accuracy: float | None
+    precision: float | None
+    recall: float | None
+    f1: float | None
+    information_coefficient: float | None
     naive_mae: float
     naive_rmse: float
     naive_mape: float | None
     naive_smape: float | None
+    naive_return_mae: float | None
+    naive_return_rmse: float | None
 
 
 def _parse_symbols(value: str) -> list[str]:
@@ -57,20 +70,74 @@ def _load_default_symbols(path: str) -> list[str]:
     return symbols[:10] if symbols else list(DEFAULT_SYMBOLS)
 
 
+def _evaluate_returns(cases: list[BacktestCase], predictions: list[list[float]], horizon: int) -> tuple:
+    return evaluate_return_predictions(cases, predictions, horizon=horizon)
+
+
+def _build_result(
+    symbol: str,
+    model: str,
+    cases: list[BacktestCase],
+    metrics,
+) -> Result:
+    predictions = [case.predicted for case in cases]
+    naive_predictions = naive_last_close_predictions(cases)
+    naive_metrics = evaluate_predictions(cases, naive_predictions)
+    return_metrics = _evaluate_returns(cases, predictions, len(cases[0].actual))
+    naive_return_metrics = _evaluate_returns(cases, naive_predictions, len(cases[0].actual))
+    return Result(
+        symbol, model, metrics.cases, metrics.mae, metrics.rmse,
+        metrics.mape, metrics.smape, metrics.directional_accuracy,
+        return_metrics.return_mae, return_metrics.return_rmse,
+        return_metrics.directional_accuracy, return_metrics.precision,
+        return_metrics.recall, return_metrics.f1, return_metrics.information_coefficient,
+        naive_metrics.mae, naive_metrics.rmse, naive_metrics.mape, naive_metrics.smape,
+        naive_return_metrics.return_mae, naive_return_metrics.return_rmse,
+    )
+
+
 def _print_metric_block(result: Result) -> None:
     mape_text = f"{result.mape:.4f}%" if result.mape is not None else "N/A"
+    return_mae_text = f"{result.return_mae * 100:.4f}%" if result.return_mae is not None else "N/A"
+    return_rmse_text = f"{result.return_rmse * 100:.4f}%" if result.return_rmse is not None else "N/A"
+    direction_text = f"{result.return_directional_accuracy * 100:.2f}%" if result.return_directional_accuracy is not None else "N/A"
+    precision_text = f"{result.precision * 100:.2f}%" if result.precision is not None else "N/A"
+    recall_text = f"{result.recall * 100:.2f}%" if result.recall is not None else "N/A"
+    f1_text = f"{result.f1 * 100:.2f}%" if result.f1 is not None else "N/A"
+    ic_text = f"{result.information_coefficient:.4f}" if result.information_coefficient is not None else "N/A"
     print(
         f"  {result.model}: cases={result.cases} "
         f"MAE={result.mae:.4f} RMSE={result.rmse:.4f} MAPE={mape_text}"
+    )
+    print(
+        f"    return@{result.horizon}d: MAE={return_mae_text} RMSE={return_rmse_text} "
+        f"direction={direction_text} precision={precision_text} recall={recall_text} "
+        f"F1={f1_text} IC={ic_text}"
     )
     if result.mape is not None and result.naive_mape is not None:
         mape_change = f"{result.mape - result.naive_mape:+.4f}pp"
     else:
         mape_change = "N/A"
+    if result.return_mae is not None and result.naive_return_mae is not None:
+        return_mae_change = f"{(result.return_mae - result.naive_return_mae) * 100:+.4f}pp"
+    else:
+        return_mae_change = "N/A"
     print(
         f"    vs naive: MAE {result.mae - result.naive_mae:+.4f}, "
-        f"RMSE {result.rmse - result.naive_rmse:+.4f}, MAPE {mape_change}"
+        f"RMSE {result.rmse - result.naive_rmse:+.4f}, MAPE {mape_change}, "
+        f"return MAE {return_mae_change}"
     )
+
+
+@dataclass(frozen=True)
+class ResultWithHorizon(Result):
+    @property
+    def horizon(self) -> int:
+        return self._horizon
+
+
+# Keep Result simple and attach the benchmark horizon without changing its public constructor shape.
+Result.horizon = property(lambda self: getattr(self, "_benchmark_horizon", 0))
 
 
 def _summarize(results: list[Result]) -> None:
@@ -87,6 +154,7 @@ def _summarize(results: list[Result]) -> None:
             continue
         mae_changes = [r.mae - r.naive_mae for r in rows]
         rmse_changes = [r.rmse - r.naive_rmse for r in rows]
+        return_mae_changes = [r.return_mae - r.naive_return_mae for r in rows if r.return_mae is not None and r.naive_return_mae is not None]
         print(f"\n{model}")
         print(f"  Stocks evaluated: {len(rows)}")
         print(f"  Mean MAE: {sum(r.mae for r in rows) / len(rows):.4f}")
@@ -95,6 +163,21 @@ def _summarize(results: list[Result]) -> None:
         print(f"  Mean RMSE change vs naive: {sum(rmse_changes) / len(rows):+.4f}")
         print(f"  Stocks beating naive on MAE: {sum(value < 0 for value in mae_changes)}/{len(rows)}")
         print(f"  Stocks beating naive on RMSE: {sum(value < 0 for value in rmse_changes)}/{len(rows)}")
+        if return_mae_changes:
+            print(f"  Mean return MAE change vs naive: {sum(return_mae_changes) / len(return_mae_changes) * 100:+.4f}pp")
+            print(
+                f"  Stocks beating naive on return MAE: "
+                f"{sum(value < 0 for value in return_mae_changes)}/{len(return_mae_changes)}"
+            )
+        direction_values = [r.return_directional_accuracy for r in rows if r.return_directional_accuracy is not None]
+        f1_values = [r.f1 for r in rows if r.f1 is not None]
+        ic_values = [r.information_coefficient for r in rows if r.information_coefficient is not None]
+        if direction_values:
+            print(f"  Mean return directional accuracy: {sum(direction_values) / len(direction_values) * 100:.2f}%")
+        if f1_values:
+            print(f"  Mean return F1: {sum(f1_values) / len(f1_values) * 100:.2f}%")
+        if ic_values:
+            print(f"  Mean return IC: {sum(ic_values) / len(ic_values):.4f}")
 
 
 def _run_chronos(symbol: str, args: argparse.Namespace, adapter: Chronos2Adapter, db) -> Result:
@@ -109,12 +192,9 @@ def _run_chronos(symbol: str, args: argparse.Namespace, adapter: Chronos2Adapter
         start_case=args.start_case,
         max_cases=args.max_cases,
     )
-    naive_metrics = evaluate_predictions(cases, naive_last_close_predictions(cases))
-    return Result(
-        symbol, "Chronos-2", metrics.cases, metrics.mae, metrics.rmse,
-        metrics.mape, metrics.smape, metrics.directional_accuracy,
-        naive_metrics.mae, naive_metrics.rmse, naive_metrics.mape, naive_metrics.smape,
-    )
+    result = _build_result(symbol, "Chronos-2", cases, metrics)
+    object.__setattr__(result, "_benchmark_horizon", args.horizon)
+    return result
 
 
 def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapter, db) -> Result:
@@ -153,13 +233,9 @@ def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapt
         cutoff_end += args.stride
 
     metrics = evaluate_cases(cases)
-    naive_metrics = evaluate_predictions(cases, naive_last_close_predictions(cases))
-    return Result(
-        symbol, f"Kronos-small(seed={args.kronos_seed})", metrics.cases,
-        metrics.mae, metrics.rmse, metrics.mape, metrics.smape,
-        metrics.directional_accuracy, naive_metrics.mae, naive_metrics.rmse,
-        naive_metrics.mape, naive_metrics.smape,
-    )
+    result = _build_result(symbol, f"Kronos-small(seed={args.kronos_seed})", cases, metrics)
+    object.__setattr__(result, "_benchmark_horizon", args.horizon)
+    return result
 
 
 def main() -> None:
