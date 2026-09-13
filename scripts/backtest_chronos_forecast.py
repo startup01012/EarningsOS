@@ -41,6 +41,7 @@ def main() -> None:
     adapter = Chronos2Adapter(device_map=args.device_map)
     cases, metrics = run_backtest(
         adapter,
+        args.symbol,
         observations,
         context_length=args.context_length,
         horizon=args.horizon,
