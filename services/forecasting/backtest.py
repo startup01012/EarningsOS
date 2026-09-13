@@ -11,6 +11,7 @@ from .price_series import PriceObservation, build_forecast_request
 @dataclass(frozen=True)
 class BacktestCase:
     cutoff_timestamp: datetime
+    cutoff_close: float
     actual: list[float]
     predicted: list[float]
 
@@ -22,23 +23,23 @@ class BacktestMetrics:
     mae: float
     rmse: float
     mape: float | None
+    smape: float | None
     directional_accuracy: float | None
 
 
-def evaluate_cases(cases: list[BacktestCase], *, baseline_closes: list[float]) -> BacktestMetrics:
+def evaluate_cases(cases: list[BacktestCase]) -> BacktestMetrics:
     if not cases:
         raise ValueError("at least one backtest case is required")
-    if len(baseline_closes) != len(cases):
-        raise ValueError("baseline_closes must have one value per case")
 
     errors: list[float] = []
     squared_errors: list[float] = []
     percentage_errors: list[float] = []
+    smape_errors: list[float] = []
     direction_hits = 0
     direction_total = 0
     horizons = len(cases[0].actual)
 
-    for case, baseline in zip(cases, baseline_closes):
+    for case in cases:
         if len(case.actual) != len(case.predicted):
             raise ValueError("actual and predicted lengths must match")
         if len(case.actual) != horizons:
@@ -49,7 +50,12 @@ def evaluate_cases(cases: list[BacktestCase], *, baseline_closes: list[float]) -
             squared_errors.append(error * error)
             if actual != 0:
                 percentage_errors.append(abs(error) / abs(actual))
-            direction_hits += int((predicted > baseline) == (actual > baseline))
+            denominator = abs(actual) + abs(predicted)
+            if denominator != 0:
+                smape_errors.append(2 * abs(error) / denominator)
+            actual_direction = actual > case.cutoff_close
+            predicted_direction = predicted > case.cutoff_close
+            direction_hits += int(predicted_direction == actual_direction)
             direction_total += 1
 
     return BacktestMetrics(
@@ -58,6 +64,7 @@ def evaluate_cases(cases: list[BacktestCase], *, baseline_closes: list[float]) -
         mae=sum(errors) / len(errors),
         rmse=sqrt(sum(squared_errors) / len(squared_errors)),
         mape=(sum(percentage_errors) / len(percentage_errors) * 100) if percentage_errors else None,
+        smape=(sum(smape_errors) / len(smape_errors) * 100) if smape_errors else None,
         directional_accuracy=(direction_hits / direction_total) if direction_total else None,
     )
 
@@ -73,15 +80,7 @@ def run_backtest(
     start_case: int = 0,
     max_cases: int | None = 5,
 ) -> tuple[list[BacktestCase], BacktestMetrics]:
-    """Run a strictly causal rolling-origin backtest.
-
-    Each forecast only sees observations at or before its cutoff. The subsequent
-    ``horizon`` observations are held out as ground truth. ``stride`` controls
-    how far the rolling origin advances between cases. ``start_case`` selects
-    the rolling window's first case, counted in stride-sized steps from the
-    earliest possible origin. This makes it possible to evaluate historical
-    windows instead of only the newest observations.
-    """
+    """Run a strictly causal rolling-origin backtest."""
     if context_length < 2:
         raise ValueError("context_length must be >= 2")
     if horizon < 1:
@@ -96,14 +95,10 @@ def run_backtest(
     ordered = sorted(observations, key=lambda item: item.timestamp)
     minimum = context_length + horizon
     if len(ordered) < minimum:
-        raise ValueError(
-            f"at least {minimum} observations are required, got {len(ordered)}"
-        )
+        raise ValueError(f"at least {minimum} observations are required, got {len(ordered)}")
 
     cases: list[BacktestCase] = []
-    baselines: list[float] = []
     cutoff_end = context_length + start_case * stride
-
     if cutoff_end + horizon > len(ordered):
         raise ValueError(
             "start_case points beyond the available observations: "
@@ -118,14 +113,14 @@ def run_backtest(
         cases.append(
             BacktestCase(
                 cutoff_timestamp=context[-1].timestamp,
+                cutoff_close=context[-1].close,
                 actual=[item.close for item in future],
                 predicted=result.median,
             )
         )
-        baselines.append(context[-1].close)
 
         if max_cases is not None and len(cases) >= max_cases:
             break
         cutoff_end += stride
 
-    return cases, evaluate_cases(cases, baseline_closes=baselines)
+    return cases, evaluate_cases(cases)
