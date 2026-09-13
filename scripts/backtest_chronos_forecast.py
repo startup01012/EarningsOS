@@ -22,6 +22,9 @@ def main() -> None:
     parser.add_argument("--device-map", default="cpu")
     args = parser.parse_args()
 
+    if args.max_cases < 1:
+        raise ValueError("--max-cases must be >= 1")
+
     required = args.context_length + args.horizon + (args.max_cases - 1) * args.stride
     db = SessionLocal()
     try:
@@ -38,7 +41,6 @@ def main() -> None:
     adapter = Chronos2Adapter(device_map=args.device_map)
     cases, metrics = run_backtest(
         adapter,
-        args.symbol,
         observations,
         context_length=args.context_length,
         horizon=args.horizon,
