@@ -41,7 +41,7 @@ class Chronos2Adapter(ForecastAdapter):
         context_df = pd.DataFrame(
             {
                 "item_id": [request.symbol] * len(request.values),
-                "timestamp": request.timestamps,
+                "timestamp": pd.to_datetime(request.timestamps, utc=True),
                 "target": request.values,
             }
         )
