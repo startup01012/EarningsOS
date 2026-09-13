@@ -8,9 +8,9 @@ from .base import ForecastAdapter, ForecastRequest, ForecastResult
 class Chronos2Adapter(ForecastAdapter):
     """Lazy-loaded adapter for Amazon's pretrained Chronos-2 model.
 
-    No training or fine-tuning is performed. The optional dependency is imported
-    only when inference is requested so the API/tests do not download model
-    weights just by importing the package.
+    Inference uses the public ``predict_df`` API. No training or fine-tuning is
+    performed. The optional dependency is imported only when inference is
+    requested so importing this package does not download model weights.
     """
 
     model_id = "amazon/chronos-2"
@@ -35,28 +35,49 @@ class Chronos2Adapter(ForecastAdapter):
         return self._pipeline
 
     def forecast(self, request: ForecastRequest) -> ForecastResult:
-        import torch
-
-        if len(request.values) != len(request.timestamps):
-            raise ValueError("values and timestamps must have the same length")
+        import pandas as pd
 
         pipeline = self._load()
-        context = torch.tensor(request.values, dtype=torch.float32)
-        forecast = pipeline.predict(context, request.horizon)
+        context_df = pd.DataFrame(
+            {
+                "item_id": [request.symbol] * len(request.values),
+                "timestamp": request.timestamps,
+                "target": request.values,
+            }
+        )
 
-        samples = forecast[0].detach().cpu().numpy()
-        # Chronos returns [series, samples, horizon]. Keep probabilistic output
-        # rather than reducing the model to a fabricated point probability.
-        import numpy as np
+        result = pipeline.predict_df(
+            context_df,
+            prediction_length=request.horizon,
+            quantile_levels=[0.1, 0.5, 0.9],
+            id_column="item_id",
+            timestamp_column="timestamp",
+            target="target",
+        )
 
-        lower, median, upper = np.quantile(samples, [0.1, 0.5, 0.9], axis=0)
+        if result.empty:
+            raise RuntimeError("Chronos-2 returned an empty forecast")
+
+        result = result.sort_values("timestamp")
+        expected_columns = {"0.1", "0.5", "0.9"}
+        missing = expected_columns.difference(result.columns)
+        if missing:
+            raise RuntimeError(
+                f"Chronos-2 forecast is missing quantile columns: {sorted(missing)}"
+            )
+
+        if len(result) != request.horizon:
+            raise RuntimeError(
+                f"Chronos-2 returned {len(result)} rows for horizon "
+                f"{request.horizon}"
+            )
 
         return ForecastResult(
             model_id=self.model_id,
             symbol=request.symbol.strip().upper(),
             generated_at=datetime.now(timezone.utc),
             horizon=request.horizon,
-            median=median.tolist(),
-            lower=lower.tolist(),
-            upper=upper.tolist(),
+            median=result["0.5"].astype(float).tolist(),
+            lower=result["0.1"].astype(float).tolist(),
+            upper=result["0.9"].astype(float).tolist(),
         )
