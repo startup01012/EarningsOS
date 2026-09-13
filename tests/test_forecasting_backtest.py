@@ -116,7 +116,7 @@ def test_run_backtest_rejects_invalid_start_case():
             FixedAdapter([1, 2]),
             "TEST",
             observations,
-            context_length=1,
+            context_length=2,
             horizon=1,
             start_case=-1,
         )
