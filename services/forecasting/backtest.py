@@ -70,13 +70,17 @@ def run_backtest(
     context_length: int = 256,
     horizon: int = 5,
     stride: int = 5,
+    start_case: int = 0,
     max_cases: int | None = 5,
 ) -> tuple[list[BacktestCase], BacktestMetrics]:
     """Run a strictly causal rolling-origin backtest.
 
     Each forecast only sees observations at or before its cutoff. The subsequent
     ``horizon`` observations are held out as ground truth. ``stride`` controls
-    how far the rolling origin advances between cases.
+    how far the rolling origin advances between cases. ``start_case`` selects
+    the rolling window's first case, counted in stride-sized steps from the
+    earliest possible origin. This makes it possible to evaluate historical
+    windows instead of only the newest observations.
     """
     if context_length < 2:
         raise ValueError("context_length must be >= 2")
@@ -84,6 +88,8 @@ def run_backtest(
         raise ValueError("horizon must be >= 1")
     if stride < 1:
         raise ValueError("stride must be >= 1")
+    if start_case < 0:
+        raise ValueError("start_case must be >= 0")
     if max_cases is not None and max_cases < 1:
         raise ValueError("max_cases must be >= 1 when provided")
 
@@ -96,7 +102,13 @@ def run_backtest(
 
     cases: list[BacktestCase] = []
     baselines: list[float] = []
-    cutoff_end = context_length
+    cutoff_end = context_length + start_case * stride
+
+    if cutoff_end + horizon > len(ordered):
+        raise ValueError(
+            "start_case points beyond the available observations: "
+            f"cutoff requires {cutoff_end + horizon} observations, got {len(ordered)}"
+        )
 
     while cutoff_end + horizon <= len(ordered):
         context = ordered[cutoff_end - context_length : cutoff_end]
