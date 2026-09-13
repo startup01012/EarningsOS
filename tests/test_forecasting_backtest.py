@@ -4,7 +4,11 @@ import pytest
 
 from services.forecasting.backtest import BacktestCase, evaluate_cases, run_backtest
 from services.forecasting.base import ForecastAdapter, ForecastResult
-from services.forecasting.benchmarks import evaluate_predictions, naive_last_close_predictions
+from services.forecasting.benchmarks import (
+    evaluate_predictions,
+    evaluate_return_predictions,
+    naive_last_close_predictions,
+)
 from services.forecasting.price_series import PriceObservation
 
 
@@ -48,6 +52,31 @@ def test_naive_last_close_predictions_use_cutoff_close():
     assert predictions == [[100, 100]]
     metrics = evaluate_predictions(cases, predictions)
     assert metrics.mae == pytest.approx(1.0)
+
+
+def test_return_metrics_use_selected_horizon_and_direction():
+    cases = [
+        BacktestCase(datetime(2026, 1, 1, tzinfo=timezone.utc), [102, 110], [101, 105], 100),
+        BacktestCase(datetime(2026, 1, 2, tzinfo=timezone.utc), [98, 90], [99, 95], 100),
+    ]
+    metrics = evaluate_return_predictions(cases, [case.predicted for case in cases], horizon=2)
+    assert metrics.cases == 2
+    assert metrics.horizon == 2
+    assert metrics.return_mae == pytest.approx(0.05)
+    assert metrics.return_rmse == pytest.approx(0.05)
+    assert metrics.directional_accuracy == pytest.approx(1.0)
+    assert metrics.precision == pytest.approx(1.0)
+    assert metrics.recall == pytest.approx(1.0)
+    assert metrics.f1 == pytest.approx(1.0)
+    assert metrics.information_coefficient == pytest.approx(1.0)
+
+
+def test_return_metrics_reject_invalid_horizon():
+    cases = [
+        BacktestCase(datetime(2026, 1, 1, tzinfo=timezone.utc), [101, 102], [100, 100], 100),
+    ]
+    with pytest.raises(ValueError, match="horizon must be between"):
+        evaluate_return_predictions(cases, [case.predicted for case in cases], horizon=3)
 
 
 def test_run_backtest_never_passes_future_observations_to_adapter():
