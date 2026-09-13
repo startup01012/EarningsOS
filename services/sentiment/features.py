@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+
+FEATURE_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass(frozen=True)
@@ -38,11 +42,19 @@ class RollingSentimentFeature:
     sentiment_momentum_3d_vs_7d: float
 
 
+def _feature_date(published_at: datetime) -> date:
+    """Convert an information timestamp to the Indian calendar date."""
+    if published_at.tzinfo is None:
+        published_at = published_at.replace(tzinfo=timezone.utc)
+    return published_at.astimezone(FEATURE_TIMEZONE).date()
+
+
 def build_daily_features(rows: list[dict]) -> list[DailySentimentFeature]:
     """Aggregate scored news by symbol/date/model.
 
     ``published_at`` is the information timestamp. Inference/ingestion time is
-    deliberately not used to assign the feature date.
+    deliberately not used to assign the feature date. Dates are normalized to
+    India Standard Time because EarningsOS targets NSE/BSE securities.
     """
     groups: dict[tuple[str, date, str], list[dict]] = defaultdict(list)
 
@@ -54,7 +66,7 @@ def build_daily_features(rows: list[dict]) -> list[DailySentimentFeature]:
         if published_at is None or not symbol or not model_name:
             continue
 
-        groups[(symbol, published_at.date(), model_name)].append(row)
+        groups[(symbol, _feature_date(published_at), model_name)].append(row)
 
     features: list[DailySentimentFeature] = []
 
