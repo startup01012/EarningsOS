@@ -55,4 +55,4 @@ def evaluate_predictions(cases: list[BacktestCase], predictions: list[list[float
 
 def naive_last_close_predictions(cases: list[BacktestCase]) -> list[list[float]]:
     """Forecast every future point at the cutoff close (last-value baseline)."""
-    return [[case.actual[0] * 0 + case.predicted[0] * 0 + 0.0 for _ in case.actual] for case in cases]
+    return [[case.cutoff_close for _ in case.actual] for case in cases]
