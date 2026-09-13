@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import pandas as pd
 import pytest
 
 from services.forecasting.base import ForecastRequest
@@ -42,3 +43,22 @@ def test_kronos_request_accepts_complete_ohlcv():
 def test_kronos_adapter_validates_max_context():
     with pytest.raises(ValueError, match="max_context must be >= 2"):
         KronosSmallAdapter(max_context=1)
+
+
+def test_kronos_passes_timestamps_as_series(monkeypatch):
+    captured = {}
+
+    class FakePredictor:
+        def predict(self, **kwargs):
+            captured.update(kwargs)
+            return pd.DataFrame({"close": [103.0, 104.0]})
+
+    adapter = KronosSmallAdapter()
+    adapter._predictor = FakePredictor()
+    adapter.forecast(_request())
+
+    assert isinstance(captured["x_timestamp"], pd.Series)
+    assert isinstance(captured["y_timestamp"], pd.Series)
+    assert captured["x_timestamp"].name == "timestamps"
+    assert captured["y_timestamp"].name == "timestamps"
+    assert len(captured["y_timestamp"]) == 2
