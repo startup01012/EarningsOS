@@ -18,14 +18,20 @@ def main() -> None:
     parser.add_argument("--context-length", type=int, default=256)
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--stride", type=int, default=5)
-    parser.add_argument("--max-cases", type=int, default=3)
+    parser.add_argument("--start-case", type=int, default=0)
+    parser.add_argument("--max-cases", type=int, default=20)
+    parser.add_argument("--history-limit", type=int, default=1000)
     parser.add_argument("--device-map", default="cpu")
     args = parser.parse_args()
 
+    if args.start_case < 0:
+        raise ValueError("--start-case must be >= 0")
     if args.max_cases < 1:
         raise ValueError("--max-cases must be >= 1")
+    minimum = args.context_length + args.horizon
+    if args.history_limit < minimum:
+        raise ValueError(f"--history-limit must be >= {minimum}")
 
-    required = args.context_length + args.horizon + (args.max_cases - 1) * args.stride
     db = SessionLocal()
     try:
         observations = load_close_observations(
@@ -33,7 +39,7 @@ def main() -> None:
             args.symbol,
             interval=args.interval,
             source=args.source,
-            limit=required,
+            limit=args.history_limit,
         )
     finally:
         db.close()
@@ -46,11 +52,14 @@ def main() -> None:
         context_length=args.context_length,
         horizon=args.horizon,
         stride=args.stride,
+        start_case=args.start_case,
         max_cases=args.max_cases,
     )
 
     print(f"Model: {adapter.model_id}")
     print(f"Symbol: {args.symbol.strip().upper()}")
+    print(f"Available observations: {len(observations)}")
+    print(f"Start case: {args.start_case}")
     print(f"Cases: {metrics.cases}")
     print(f"Horizon: {metrics.horizons}")
     print(f"Context length: {args.context_length}")
