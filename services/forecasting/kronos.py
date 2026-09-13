@@ -11,6 +11,10 @@ class KronosSmallAdapter(ForecastAdapter):
     Kronos consumes OHLCV/amount candles rather than a close-only series. This
     adapter therefore requires the corresponding fields on ForecastRequest.
     No training or fine-tuning is performed.
+
+    Kronos uses torch.multinomial during autoregressive token sampling. When a
+    seed is supplied, the adapter resets the PyTorch RNG immediately before
+    inference so repeated forecasts with identical inputs are reproducible.
     """
 
     model_id = "NeoQuasar/Kronos-small"
@@ -23,16 +27,20 @@ class KronosSmallAdapter(ForecastAdapter):
         temperature: float = 1.0,
         top_p: float = 0.9,
         sample_count: int = 1,
+        seed: int | None = None,
     ) -> None:
         if max_context < 2:
             raise ValueError("max_context must be >= 2")
         if sample_count < 1:
             raise ValueError("sample_count must be >= 1")
+        if seed is not None and seed < 0:
+            raise ValueError("seed must be >= 0")
         self.device = device
         self.max_context = max_context
         self.temperature = temperature
         self.top_p = top_p
         self.sample_count = sample_count
+        self.seed = seed
         self._predictor = None
 
     def _load(self):
@@ -54,6 +62,16 @@ class KronosSmallAdapter(ForecastAdapter):
                 max_context=self.max_context,
             )
         return self._predictor
+
+    def _seed_rng(self) -> None:
+        if self.seed is None:
+            return
+
+        import torch
+
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
 
     def forecast(self, request: ForecastRequest) -> ForecastResult:
         import pandas as pd
@@ -97,6 +115,7 @@ class KronosSmallAdapter(ForecastAdapter):
         )
 
         predictor = self._load()
+        self._seed_rng()
         result = predictor.predict(
             df=context,
             x_timestamp=x_timestamp,
