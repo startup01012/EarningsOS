@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from statistics import mean, median, pstdev
 
 from apps.api.db.session import SessionLocal
 from services.forecasting.backtest import BacktestCase, evaluate_cases
@@ -24,9 +25,45 @@ def build_request(symbol: str, context, horizon: int) -> ForecastRequest:
     )
 
 
+def build_cases(observations, symbol: str, context_length: int, horizon: int, stride: int,
+                start_case: int, max_cases: int) -> list[tuple[BacktestCase, object]]:
+    cases: list[tuple[BacktestCase, object]] = []
+    cutoff_end = context_length + start_case * stride
+
+    if cutoff_end + horizon > len(observations):
+        raise ValueError(
+            "start_case points beyond the available observations: "
+            f"cutoff requires {cutoff_end + horizon} observations, got {len(observations)}"
+        )
+
+    while cutoff_end + horizon <= len(observations):
+        context = observations[cutoff_end - context_length : cutoff_end]
+        future = observations[cutoff_end : cutoff_end + horizon]
+        cases.append(
+            (
+                BacktestCase(
+                    cutoff_timestamp=context[-1].timestamp,
+                    actual=[row.close for row in future],
+                    predicted=[],
+                    cutoff_close=context[-1].close,
+                ),
+                context,
+            )
+        )
+        if len(cases) >= max_cases:
+            break
+        cutoff_end += stride
+
+    return cases
+
+
+def metric_summary(values: list[float]) -> tuple[float, float, float]:
+    return mean(values), median(values), pstdev(values) if len(values) > 1 else 0.0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a strictly causal rolling backtest with pretrained Kronos-small"
+        description="Run a strictly causal multi-seed rolling backtest with pretrained Kronos-small"
     )
     parser.add_argument("--symbol", default="RELIANCE")
     parser.add_argument("--source", default="yfinance")
@@ -38,8 +75,18 @@ def main() -> None:
     parser.add_argument("--max-cases", type=int, default=20)
     parser.add_argument("--history-limit", type=int, default=1000)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--seeds",
+        default="101,202,303,404,505",
+        help="Comma-separated PyTorch seeds used for independent stochastic runs",
+    )
     args = parser.parse_args()
 
+    seeds = [int(value.strip()) for value in args.seeds.split(",") if value.strip()]
+    if not seeds:
+        raise ValueError("--seeds must contain at least one integer seed")
+    if any(seed < 0 for seed in seeds):
+        raise ValueError("all seeds must be >= 0")
     if args.context_length < 2:
         raise ValueError("--context-length must be >= 2")
     if args.horizon < 1:
@@ -71,75 +118,100 @@ def main() -> None:
             f"at least {minimum} observations are required, got {len(observations)}"
         )
 
+    case_contexts = build_cases(
+        observations,
+        args.symbol,
+        args.context_length,
+        args.horizon,
+        args.stride,
+        args.start_case,
+        args.max_cases,
+    )
+
+    naive_cases = [case for case, _ in case_contexts]
+    naive_predictions = naive_last_close_predictions(naive_cases)
+    naive_metrics = evaluate_predictions(naive_cases, naive_predictions)
+
     adapter = KronosSmallAdapter(device=args.device, max_context=512)
-    cases: list[BacktestCase] = []
-    cutoff_end = args.context_length + args.start_case * args.stride
+    seed_metrics = []
 
-    if cutoff_end + args.horizon > len(observations):
-        raise ValueError(
-            "start_case points beyond the available observations: "
-            f"cutoff requires {cutoff_end + args.horizon} observations, got {len(observations)}"
-        )
-
-    while cutoff_end + args.horizon <= len(observations):
-        context = observations[cutoff_end - args.context_length : cutoff_end]
-        future = observations[cutoff_end : cutoff_end + args.horizon]
-        request = build_request(args.symbol, context, args.horizon)
-        result = adapter.forecast(request)
-        cases.append(
-            BacktestCase(
-                cutoff_timestamp=context[-1].timestamp,
-                actual=[row.close for row in future],
-                predicted=result.median,
-                cutoff_close=context[-1].close,
+    for seed in seeds:
+        adapter.seed = seed
+        cases: list[BacktestCase] = []
+        for template, context in case_contexts:
+            request = build_request(args.symbol, context, args.horizon)
+            result = adapter.forecast(request)
+            cases.append(
+                BacktestCase(
+                    cutoff_timestamp=template.cutoff_timestamp,
+                    actual=template.actual,
+                    predicted=result.median,
+                    cutoff_close=template.cutoff_close,
+                )
             )
-        )
-        if len(cases) >= args.max_cases:
-            break
-        cutoff_end += args.stride
 
-    metrics = evaluate_cases(cases)
-    naive_predictions = naive_last_close_predictions(cases)
-    naive_metrics = evaluate_predictions(cases, naive_predictions)
+        metrics = evaluate_cases(cases)
+        seed_metrics.append(metrics)
+
+        print(f"\n=== Kronos-small seed {seed} ===")
+        print(f"MAE: {metrics.mae:.6f}")
+        print(f"RMSE: {metrics.rmse:.6f}")
+        print(f"MAPE: {metrics.mape:.6f}%" if metrics.mape is not None else "MAPE: N/A")
+        print(f"sMAPE: {metrics.smape:.6f}%" if metrics.smape is not None else "sMAPE: N/A")
+        print(
+            f"Directional accuracy: {metrics.directional_accuracy:.2%}"
+            if metrics.directional_accuracy is not None
+            else "Directional accuracy: N/A"
+        )
 
     print(f"Model: {adapter.model_id}")
     print(f"Symbol: {args.symbol.strip().upper()}")
     print(f"Available observations: {len(observations)}")
     print(f"Start case: {args.start_case}")
-    print(f"Cases: {metrics.cases}")
-    print(f"Horizon: {metrics.horizons}")
+    print(f"Cases per seed: {len(case_contexts)}")
+    print(f"Horizon: {args.horizon}")
     print(f"Context length: {args.context_length}")
-    print("\n=== Kronos-small ===")
-    print(f"MAE: {metrics.mae:.6f}")
-    print(f"RMSE: {metrics.rmse:.6f}")
-    print(f"MAPE: {metrics.mape:.6f}%" if metrics.mape is not None else "MAPE: N/A")
-    print(f"sMAPE: {metrics.smape:.6f}%" if metrics.smape is not None else "sMAPE: N/A")
-    print(
-        f"Directional accuracy: {metrics.directional_accuracy:.2%}"
-        if metrics.directional_accuracy is not None
-        else "Directional accuracy: N/A"
-    )
+    print(f"Seeds: {seeds}")
+
+    mae = metric_summary([m.mae for m in seed_metrics])
+    rmse = metric_summary([m.rmse for m in seed_metrics])
+    mape_values = [m.mape for m in seed_metrics if m.mape is not None]
+    smape_values = [m.smape for m in seed_metrics if m.smape is not None]
+    direction_values = [m.directional_accuracy for m in seed_metrics if m.directional_accuracy is not None]
+
+    print("\n=== Kronos-small multi-seed summary ===")
+    print(f"MAE mean/median/std: {mae[0]:.6f} / {mae[1]:.6f} / {mae[2]:.6f}")
+    print(f"RMSE mean/median/std: {rmse[0]:.6f} / {rmse[1]:.6f} / {rmse[2]:.6f}")
+    if mape_values:
+        summary = metric_summary(mape_values)
+        print(f"MAPE mean/median/std: {summary[0]:.6f}% / {summary[1]:.6f}% / {summary[2]:.6f}%")
+    else:
+        print("MAPE mean/median/std: N/A")
+    if smape_values:
+        summary = metric_summary(smape_values)
+        print(f"sMAPE mean/median/std: {summary[0]:.6f}% / {summary[1]:.6f}% / {summary[2]:.6f}%")
+    else:
+        print("sMAPE mean/median/std: N/A")
+    if direction_values:
+        summary = metric_summary(direction_values)
+        print(f"Directional accuracy mean/median/std: {summary[0]:.2%} / {summary[1]:.2%} / {summary[2]:.2%}")
+    else:
+        print("Directional accuracy mean/median/std: N/A")
+
     print("\n=== Naive last-close baseline ===")
     print(f"MAE: {naive_metrics.mae:.6f}")
     print(f"RMSE: {naive_metrics.rmse:.6f}")
     print(f"MAPE: {naive_metrics.mape:.6f}%" if naive_metrics.mape is not None else "MAPE: N/A")
     print(f"sMAPE: {naive_metrics.smape:.6f}%" if naive_metrics.smape is not None else "sMAPE: N/A")
     print("Directional accuracy: N/A (constant forecast has no directional signal)")
-    print("\n=== Kronos improvement vs naive ===")
-    print(f"MAE change: {metrics.mae - naive_metrics.mae:+.6f} (negative is better)")
-    print(f"RMSE change: {metrics.rmse - naive_metrics.rmse:+.6f} (negative is better)")
-    if metrics.mape is not None and naive_metrics.mape is not None:
-        print(f"MAPE change: {metrics.mape - naive_metrics.mape:+.6f} percentage points (negative is better)")
-    if metrics.smape is not None and naive_metrics.smape is not None:
-        print(f"sMAPE change: {metrics.smape - naive_metrics.smape:+.6f} percentage points (negative is better)")
 
-    print("\nCases:")
-    for case in cases:
-        print(
-            f"  cutoff={case.cutoff_timestamp.isoformat()} "
-            f"cutoff_close={case.cutoff_close:.6f} "
-            f"actual={case.actual} predicted={case.predicted}"
-        )
+    print("\n=== Kronos mean improvement vs naive ===")
+    print(f"MAE change: {mae[0] - naive_metrics.mae:+.6f} (negative is better)")
+    print(f"RMSE change: {rmse[0] - naive_metrics.rmse:+.6f} (negative is better)")
+    if mape_values and naive_metrics.mape is not None:
+        print(f"MAPE change: {mean(mape_values) - naive_metrics.mape:+.6f} percentage points (negative is better)")
+    if smape_values and naive_metrics.smape is not None:
+        print(f"sMAPE change: {mean(smape_values) - naive_metrics.smape:+.6f} percentage points (negative is better)")
 
 
 if __name__ == "__main__":
