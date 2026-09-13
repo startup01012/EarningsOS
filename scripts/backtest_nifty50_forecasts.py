@@ -146,7 +146,7 @@ def _run_kronos(symbol: str, args: argparse.Namespace, adapter: KronosSmallAdapt
             BacktestCase(
                 cutoff_timestamp=context[-1].timestamp,
                 actual=[item.close for item in future],
-                predicted=forecast.values,
+                predicted=forecast.median,
                 cutoff_close=context[-1].close,
             )
         )
