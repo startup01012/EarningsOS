@@ -71,17 +71,13 @@ def _direction_correct(case: BacktestCase, prediction: list[float], horizon: int
     predicted_return = prediction[horizon - 1] / case.cutoff_close - 1.0
     if actual_return == 0:
         return None
-    actual_direction = 1 if actual_return > 0 else -1
-    predicted_direction = 1 if predicted_return > 0 else -1
-    return int(actual_direction == predicted_direction)
+    return int((actual_return > 0) == (predicted_return > 0))
 
 
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     middle = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[middle]
-    return (ordered[middle - 1] + ordered[middle]) / 2.0
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2.0
 
 
 def _bootstrap_mean_ci(values: list[float], *, seed: int, resamples: int = 4000) -> tuple[float | None, float | None, float | None]:
@@ -102,7 +98,7 @@ def _normal_two_sided_pvalue(z: float) -> float:
 
 
 def dm_style_hac(loss_diffs: list[float], max_lag: int) -> tuple[float | None, float | None]:
-    """Return a two-sided normal DM-style statistic with Newey-West HAC variance."""
+    """DM-style normal statistic using Newey-West HAC variance."""
     n = len(loss_diffs)
     if n < 3:
         return None, None
@@ -113,8 +109,7 @@ def dm_style_hac(loss_diffs: list[float], max_lag: int) -> tuple[float | None, f
     long_run = gamma0
     for k in range(1, lag + 1):
         gamma = sum(centered[t] * centered[t - k] for t in range(k, n)) / n
-        weight = 1.0 - k / (lag + 1.0)
-        long_run += 2.0 * weight * gamma
+        long_run += 2.0 * (1.0 - k / (lag + 1.0)) * gamma
     if long_run <= 0:
         return None, None
     statistic = mean / sqrt(long_run / n)
@@ -133,12 +128,7 @@ def compare_paired(
     symbol: str = "",
     dependence_lag: int | None = None,
 ) -> tuple[PairedComparison, list[PairedCaseResult]]:
-    """Compare model and baseline on identical causal cutoffs.
-
-    Positive loss_diff means the model is worse; negative means the model is
-    better. Bootstrap resampling is paired, so each model loss stays matched
-    to the baseline loss from the same cutoff.
-    """
+    """Compare model and baseline on identical causal cutoffs."""
     _validate(cases, model_predictions, "model")
     _validate(cases, baseline_predictions, "baseline")
     if horizon < 1 or horizon > len(cases[0].actual):
@@ -172,27 +162,9 @@ def compare_paired(
             model_hits.append(model_correct)
         if baseline_correct is not None:
             baseline_hits.append(baseline_correct)
-        paired_rows.append(
-            PairedCaseResult(
-                symbol=symbol,
-                case_index=index,
-                model=model,
-                baseline=baseline,
-                cutoff_timestamp=case.cutoff_timestamp,
-                horizon=horizon,
-                regime=case.regime,
-                model_loss=model_loss,
-                baseline_loss=baseline_loss,
-                loss_diff=diff,
-                model_direction_correct=model_correct,
-                baseline_direction_correct=baseline_correct,
-            )
-        )
+        paired_rows.append(PairedCaseResult(symbol, index, model, baseline, case.cutoff_timestamp, horizon, case.regime, model_loss, baseline_loss, diff, model_correct, baseline_correct))
 
-    ci_low, ci_high, std = _bootstrap_mean_ci(
-        diffs,
-        seed=20260913 + horizon + len(model) * 17 + len(baseline),
-    )
+    ci_low, ci_high, std = _bootstrap_mean_ci(diffs, seed=20260913 + horizon + len(model) * 17 + len(baseline))
     wins = sum(diff < 0 for diff in diffs)
     ties = sum(diff == 0 for diff in diffs)
     n = len(diffs)
@@ -203,26 +175,42 @@ def compare_paired(
 
     return (
         PairedComparison(
-            model=model,
-            baseline=baseline,
-            horizon=horizon,
-            regime=regime,
-            cases=n,
-            model_loss_mean=sum(model_losses) / n,
-            baseline_loss_mean=sum(baseline_losses) / n,
-            mean_loss_diff=sum(diffs) / n,
-            median_loss_diff=_median(diffs),
-            std_loss_diff=std,
-            ci_low=ci_low,
-            ci_high=ci_high,
-            model_win_rate=wins / n,
-            tie_rate=ties / n,
-            baseline_win_rate=(n - wins - ties) / n,
-            dm_stat=dm_stat,
-            dm_pvalue=dm_pvalue,
-            model_directional_accuracy=model_da,
-            baseline_directional_accuracy=baseline_da,
-            directional_accuracy_diff=(model_da - baseline_da) if model_da is not None and baseline_da is not None else None,
+            model, baseline, horizon, regime, n,
+            sum(model_losses) / n, sum(baseline_losses) / n,
+            sum(diffs) / n, _median(diffs), std, ci_low, ci_high,
+            wins / n, ties / n, (n - wins - ties) / n,
+            dm_stat, dm_pvalue, model_da, baseline_da,
+            (model_da - baseline_da) if model_da is not None and baseline_da is not None else None,
         ),
         paired_rows,
     )
+
+
+def dedupe_paired_cases(rows: list[PairedCaseResult], *, include_regime: bool = True) -> list[PairedCaseResult]:
+    """Deduplicate persisted paired rows created by overlapping report views.
+
+    The canonical identity is symbol + cutoff + model + baseline + horizon.
+    Regime is metadata of that cutoff, not a second forecast observation.
+    """
+    seen: set[tuple[object, ...]] = set()
+    result: list[PairedCaseResult] = []
+    for row in rows:
+        key = (row.symbol, row.cutoff_timestamp, row.model, row.baseline, row.horizon)
+        if include_regime:
+            key = (*key, row.regime)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(row)
+    return result
+
+
+def strongest_baseline(summaries: list[PairedComparison], *, horizon: int) -> PairedComparison | None:
+    """Return the baseline with the lowest mean return MAE at a horizon.
+
+    This is the only baseline that may determine the production gate. Other
+    baselines remain diagnostic and are never substituted merely because a
+    model happens to beat them.
+    """
+    candidates = [item for item in summaries if item.regime == "all" and item.horizon == horizon]
+    return min(candidates, key=lambda item: item.baseline_loss_mean) if candidates else None
