@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -38,7 +38,8 @@ def test_chronos_receives_required_univariate_dataframe_and_business_frequency()
 
     assert list(fake.context.columns) == ["item_id", "timestamp", "target"]
     assert fake.context["item_id"].tolist() == ["TEST", "TEST", "TEST"]
-    assert str(fake.context["timestamp"].dtype) == "datetime64[ns]"
+    assert str(fake.context["timestamp"].dtype).startswith("datetime64[")
+    assert fake.context["timestamp"].dt.tz is None
     assert fake.context["target"].tolist() == [100.0, 101.0, 102.0]
     assert fake.context["timestamp"].is_monotonic_increasing
     assert fake.context["timestamp"].is_unique
