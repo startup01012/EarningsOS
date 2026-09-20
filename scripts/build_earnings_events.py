@@ -306,7 +306,62 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "quality_flag": quality_flag,
         })
 
-    return pd.DataFrame(event_rows), pd.DataFrame(document_rows), pd.DataFrame(quality)
+    events_df = pd.DataFrame(event_rows)
+    documents_df = pd.DataFrame(document_rows)
+    quality_df = pd.DataFrame(quality)
+
+    # A source can contain multiple announcement rows that resolve to the same
+    # business event key. Collapse those event rows before persistence while
+    # retaining every document row.
+    if not events_df.empty and events_df["event_key"].duplicated().any():
+        def _worst_quality(values: pd.Series) -> str:
+            flags = set(values.astype(str))
+            if "MULTIPLE_PRIMARY_RESULTS" in flags:
+                return "MULTIPLE_PRIMARY_RESULTS"
+            if "MISSING_RESULT" in flags:
+                return "MISSING_RESULT"
+            if "SUSPICIOUS_DATE" in flags:
+                return "SUSPICIOUS_DATE"
+            return "OK"
+
+        events_df = (
+            events_df.sort_values(
+                ["event_key", "result_announcement_datetime"],
+                na_position="last",
+            )
+            .groupby("event_key", as_index=False)
+            .agg(
+                symbol=("symbol", "first"),
+                period_ended=("period_ended", "first"),
+                fiscal_period=("fiscal_period", "first"),
+                result_announcement_datetime=("result_announcement_datetime", "min"),
+                document_count=("document_count", "sum"),
+                has_financial_results=("has_financial_results", "max"),
+                has_media_release=("has_media_release", "max"),
+                has_earnings_call=("has_earnings_call", "max"),
+                has_transcript=("has_transcript", "max"),
+                first_document_datetime=("first_document_datetime", "min"),
+                last_document_datetime=("last_document_datetime", "max"),
+                quality_flag=("quality_flag", _worst_quality),
+            )
+        )
+        events_df["announcement_date"] = events_df["result_announcement_datetime"].map(
+            lambda value: value.date() if value is not None and not pd.isna(value) else None
+        )
+        events_df["announcement_time"] = events_df["result_announcement_datetime"].map(
+            lambda value: value.time().isoformat() if value is not None and not pd.isna(value) else None
+        )
+
+        if not quality_df.empty:
+            quality_df = quality_df.drop_duplicates("event_key", keep="first")
+            quality_df["document_count"] = quality_df["event_key"].map(
+                documents_df["event_key"].value_counts()
+            ).fillna(0).astype(int)
+            quality_df["quality_flag"] = quality_df["event_key"].map(
+                events_df.set_index("event_key")["quality_flag"]
+            )
+
+    return events_df, documents_df, quality_df
 
 
 def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, int]:
