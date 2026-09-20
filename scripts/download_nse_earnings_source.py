@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-import requests
+from jugaad_data.nse import NSELive
 
 NSE_PAGE = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 NSE_API = "https://www.nseindia.com/api/corporate-announcements"
@@ -68,23 +68,8 @@ def _parse_period_end(text: str) -> date | None:
     return None
 
 
-def _session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 Chrome/153.0 Safari/537.36"
-            ),
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": NSE_PAGE,
-        }
-    )
-    # The corporate-announcements endpoint requires an NSE session cookie.
-    response = session.get(NSE_PAGE, timeout=30)
-    response.raise_for_status()
-    return session
+def _client() -> NSELive:
+    return NSELive()
 
 
 def _windows(start: date, end: date, days: int = 7):
@@ -95,25 +80,11 @@ def _windows(start: date, end: date, days: int = 7):
         current = window_end + timedelta(days=1)
 
 
-def _fetch(session: requests.Session, start: date, end: date):
-    params = {
-        "index": "equities",
-        "from_date": start.strftime("%d-%m-%Y"),
-        "to_date": end.strftime("%d-%m-%Y"),
-    }
-    for attempt in range(4):
-        try:
-            response = session.get(NSE_API, params=params, timeout=45)
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict):
-                payload = payload.get("data", payload.get("results", []))
-            return payload if isinstance(payload, list) else []
-        except Exception:
-            if attempt == 3:
-                raise
-            time.sleep(2**attempt)
-    return []
+def _fetch(client: NSELive, start: date, end: date):
+    return client.corporate_announcements(
+        from_date=start,
+        to_date=end,
+    )
 
 
 def main() -> None:
@@ -128,11 +99,11 @@ def main() -> None:
     end = date.fromisoformat(args.end)
     symbols = {s.strip().upper() for s in args.symbols.split(",") if s.strip()}
 
-    session = _session()
+    client = _client()
     rows: list[dict] = []
 
     for window_start, window_end in _windows(start, end):
-        batch = _fetch(session, window_start, window_end)
+        batch = _fetch(client, window_start, window_end)
         retained = 0
 
         for raw in batch:
