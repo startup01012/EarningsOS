@@ -13,6 +13,14 @@ SessionLocal = sessionmaker(
 )
 
 
+def _database_url() -> str:
+    url = settings.database_url.strip().strip("'").strip('"')
+    if url.startswith("postgresql://"):
+        # psycopg 3 is installed in the API environment.
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 def _get_engine():
     global _engine
     if _engine is not None:
@@ -24,7 +32,7 @@ def _get_engine():
         )
 
     _engine = create_engine(
-        settings.database_url,
+        _database_url(),
         pool_pre_ping=True,
     )
     SessionLocal.configure(bind=_engine)
