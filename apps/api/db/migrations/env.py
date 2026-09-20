@@ -13,12 +13,21 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Load database URL from .env through Pydantic Settings.
-database_url = settings.database_url
+
+def _database_url() -> str:
+    url = settings.database_url.strip().strip("'").strip('"')
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    elif url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    return url
+
+
+database_url = _database_url()
 
 if not database_url:
     raise RuntimeError(
-        "DATABASE_URL is not configured. Check your .env file."
+        "DATABASE_URL is not configured. Check the deployment environment."
     )
 
 config.set_main_option(
