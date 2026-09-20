@@ -72,7 +72,18 @@ def _float(value: Decimal | int | float | None) -> float | None:
     return None if value is None else float(value)
 
 
-def _baseline(db, symbol: str, as_of: datetime) -> dict:
+def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
+    if as_of is None:
+        return {
+            "available": False,
+            "score": None,
+            "label": None,
+            "article_count": 0,
+            "model": "ProsusAI/finbert",
+            "boundary": None,
+            "method": "result_announcement_datetime required; no current-time fallback",
+        }
+
     rows = db.execute(
         select(NewsArticle, SentimentScore)
         .join(SentimentScore, SentimentScore.article_id == NewsArticle.id)
@@ -230,9 +241,9 @@ def intelligence(
     ),
 ) -> dict:
     symbol = symbol.strip().upper()
-    boundary = as_of or datetime.now(timezone.utc)
-    if boundary.tzinfo is None:
-        boundary = boundary.replace(tzinfo=timezone.utc)
+    requested_boundary = as_of
+    if requested_boundary is not None and requested_boundary.tzinfo is None:
+        requested_boundary = requested_boundary.replace(tzinfo=timezone.utc)
 
     db = get_session()
     try:
@@ -240,12 +251,43 @@ def intelligence(
         if stock is None:
             raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
 
-        event = db.execute(
-            select(EarningsEvent)
-            .where(EarningsEvent.stock_id == stock.id)
-            .order_by(EarningsEvent.event_date.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if requested_boundary is not None:
+            event = db.execute(
+                select(EarningsEvent)
+                .where(
+                    EarningsEvent.stock_id == stock.id,
+                    EarningsEvent.result_announcement_datetime.is_not(None),
+                    EarningsEvent.result_announcement_datetime <= requested_boundary,
+                )
+                .order_by(EarningsEvent.result_announcement_datetime.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            boundary = event.result_announcement_datetime if event else requested_boundary
+        else:
+            # Default intelligence is anchored to the nearest upcoming result.
+            # If no future event exists, use the latest announced event.
+            event = db.execute(
+                select(EarningsEvent)
+                .where(
+                    EarningsEvent.stock_id == stock.id,
+                    EarningsEvent.result_announcement_datetime.is_not(None),
+                    EarningsEvent.result_announcement_datetime > now,
+                )
+                .order_by(EarningsEvent.result_announcement_datetime.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if event is None:
+                event = db.execute(
+                    select(EarningsEvent)
+                    .where(
+                        EarningsEvent.stock_id == stock.id,
+                        EarningsEvent.result_announcement_datetime.is_not(None),
+                    )
+                    .order_by(EarningsEvent.result_announcement_datetime.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+            boundary = event.result_announcement_datetime if event else None
 
         return {
             "symbol": symbol,
@@ -259,9 +301,17 @@ def intelligence(
             },
             "earnings_event": (
                 {
+                    "event_key": event.event_key,
                     "fiscal_period": event.fiscal_period,
+                    "period_ended": event.period_ended.isoformat(),
                     "event_date": event.event_date.isoformat(),
+                    "result_announcement_datetime": _iso(event.result_announcement_datetime),
                     "announced_at": _iso(event.announced_at),
+                    "document_count": event.document_count,
+                    "has_financial_results": event.has_financial_results,
+                    "has_media_release": event.has_media_release,
+                    "has_earnings_call": event.has_earnings_call,
+                    "has_transcript": event.has_transcript,
                     "eps_actual": _float(event.eps_actual),
                     "eps_estimate": _float(event.eps_estimate),
                     "revenue_actual": _float(event.revenue_actual),
@@ -272,7 +322,8 @@ def intelligence(
                 else None
             ),
             "data_boundary": _iso(boundary),
-            "leakage_policy": "News is filtered by published_at <= data_boundary. Post-result material must not be used for pre-result features.",
+
+            "leakage_policy": "The default data_boundary is the selected event's result_announcement_datetime. News is filtered by published_at <= data_boundary. Post-result material must not be used for pre-result features.",
         }
     finally:
         db.close()
