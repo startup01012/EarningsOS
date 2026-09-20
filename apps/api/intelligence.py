@@ -16,7 +16,7 @@ from apps.api.db.models import (
     SentimentScore,
     Stock,
 )
-from apps.api.db.session import SessionLocal
+from apps.api.db.session import get_session
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 
@@ -175,7 +175,7 @@ def models() -> dict:
 @router.get("/market/{symbol}")
 def market(symbol: str) -> dict:
     symbol = symbol.strip().upper()
-    db = SessionLocal()
+    db = get_session()
     try:
         stock = db.scalar(select(Stock).where(Stock.symbol == symbol))
         if stock is None:
@@ -199,7 +199,7 @@ def watchlist(
     ),
 ) -> dict:
     requested = [item.strip().upper() for item in symbols.split(",") if item.strip()]
-    db = SessionLocal()
+    db = get_session()
     try:
         result = []
         for symbol in requested:
@@ -234,7 +234,7 @@ def intelligence(
     if boundary.tzinfo is None:
         boundary = boundary.replace(tzinfo=timezone.utc)
 
-    db = SessionLocal()
+    db = get_session()
     try:
         stock = db.scalar(select(Stock).where(Stock.symbol == symbol))
         if stock is None:
@@ -285,7 +285,7 @@ def stored_forecast(
     horizon: str | None = None,
 ) -> dict:
     symbol = symbol.strip().upper()
-    db = SessionLocal()
+    db = get_session()
     try:
         rows = _forecasts(db, symbol)
         if model:
