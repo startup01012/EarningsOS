@@ -290,15 +290,27 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
 
 
 def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, int]:
+    """Idempotently persist canonical events/documents with batched DB access."""
     db = get_session()
     inserted_events = inserted_documents = 0
     try:
         stocks = {stock.symbol: stock for stock in db.scalars(select(Stock)).all()}
+        symbols = set(events["symbol"].dropna().astype(str)) if len(events) else set()
+        missing_stocks = sorted(symbol for symbol in symbols if symbol not in stocks)
+        if missing_stocks:
+            raise ValueError(f"Stock rows missing for symbols: {missing_stocks}")
+
+        event_keys = events["event_key"].dropna().astype(str).tolist()
+        existing_events = {
+            event.event_key: event
+            for event in db.scalars(
+                select(EarningsEvent).where(EarningsEvent.event_key.in_(event_keys))
+            ).all()
+        }
+
         for row in events.itertuples(index=False):
-            stock = stocks.get(row.symbol)
-            if stock is None:
-                raise ValueError(f"Stock row missing for symbol {row.symbol}")
-            existing = db.scalar(select(EarningsEvent).where(EarningsEvent.event_key == row.event_key))
+            stock = stocks[row.symbol]
+            existing = existing_events.get(row.event_key)
             values = dict(
                 stock_id=stock.id,
                 event_key=row.event_key,
@@ -322,20 +334,28 @@ def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, 
             if existing is None:
                 existing = EarningsEvent(**values)
                 db.add(existing)
-                db.flush()
+                existing_events[row.event_key] = existing
                 inserted_events += 1
             else:
                 for key, value in values.items():
                     setattr(existing, key, value)
 
-        db.commit()
+        db.flush()
+
+        document_ids = documents["document_id"].dropna().astype(str).tolist() if len(documents) else []
+        existing_documents = {
+            document.document_id: document
+            for document in db.scalars(
+                select(EarningsDocument).where(EarningsDocument.document_id.in_(document_ids))
+            ).all()
+        }
 
         for row in documents.itertuples(index=False):
-            event = db.scalar(select(EarningsEvent).where(EarningsEvent.event_key == row.event_key))
+            event = existing_events.get(row.event_key)
             stock = stocks.get(row.symbol)
             if event is None or stock is None:
                 raise ValueError(f"Missing event/stock for document {row.document_id}")
-            existing = db.scalar(select(EarningsDocument).where(EarningsDocument.document_id == row.document_id))
+
             values = dict(
                 event_id=event.id,
                 event_key=row.event_key,
@@ -351,12 +371,14 @@ def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, 
                 is_followup_document=bool(row.is_followup_document),
                 source=row.source,
             )
+            existing = existing_documents.get(row.document_id)
             if existing is None:
                 db.add(EarningsDocument(document_id=row.document_id, **values))
                 inserted_documents += 1
             else:
                 for key, value in values.items():
                     setattr(existing, key, value)
+
         db.commit()
         return inserted_events, inserted_documents
     except Exception:
