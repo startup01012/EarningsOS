@@ -1,0 +1,51 @@
+name: EarningsOS pretrained forecast batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma-separated models"
+        required: false
+        default: "chronos"
+      symbols:
+        description: "Comma-separated NSE symbols"
+        required: false
+        default: "ADANIENT,AXISBANK,HDFCBANK,INFY,RELIANCE"
+      horizons:
+        description: "Comma-separated horizons"
+        required: false
+        default: "1,5,10"
+  schedule:
+    - cron: "30 12 * * 1-5"
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FORECAST_MODELS: ${{ inputs.models || 'chronos' }}
+      FORECAST_SYMBOLS: ${{ inputs.symbols || 'ADANIENT,AXISBANK,HDFCBANK,INFY,RELIANCE' }}
+      FORECAST_HORIZONS: ${{ inputs.horizons || '1,5,10' }}
+      FORECAST_CONTEXT: "256"
+      CHRONOS_DEVICE: "cpu"
+      TIMESFM_DEVICE: "cpu"
+      KRONOS_DEVICE: "cpu"
+      FINCAST_DEVICE: "cpu"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install API/database dependencies
+        run: python -m pip install -r apps/api/requirements.txt
+
+      - name: Install pretrained ML dependencies
+        run: python -m pip install -r requirements/ml.txt
+
+      - name: Run validated forecast batch
+        run: python scripts/run_forecasts.py
