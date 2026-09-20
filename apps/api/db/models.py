@@ -179,9 +179,29 @@ class EarningsEvent(Base):
     __tablename__ = "earnings_events"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+
+    event_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    period_ended: Mapped[Date] = mapped_column(Date, index=True)
     fiscal_period: Mapped[str] = mapped_column(String(50))
     event_date: Mapped[Date] = mapped_column(Date, index=True)
+
+    result_announcement_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    announcement_date: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    announcement_time: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    fiscal_quarter: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_status: Mapped[str] = mapped_column(String(40), default="identified")
+
+    document_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_financial_results: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_media_release: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_earnings_call: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_transcript: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_document_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_document_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     eps_actual: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     eps_estimate: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     revenue_actual: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
@@ -191,6 +211,29 @@ class EarningsEvent(Base):
     guidance_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     concall_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     stock: Mapped["Stock"] = relationship(back_populates="earnings_events")
+    documents: Mapped[list["EarningsDocument"]] = relationship(
+        back_populates="event", cascade="all, delete-orphan"
+    )
+
+
+class EarningsDocument(Base):
+    __tablename__ = "earnings_documents"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("earnings_events.id", ondelete="CASCADE"), index=True)
+    event_key: Mapped[str] = mapped_column(String(100), index=True)
+    stock_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(30), index=True)
+    period_ended: Mapped[Date] = mapped_column(Date, index=True)
+    announcement_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    document_type: Mapped[str] = mapped_column(String(80))
+    document_subtype: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    announcement_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filing_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_primary_result: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_followup_document: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    event: Mapped["EarningsEvent"] = relationship(back_populates="documents")
 
 
 class IntelligenceSignal(Base):
