@@ -1,17 +1,17 @@
-"""Download NSE financial-results filings with explicit reporting periods.
-
-The financial-results endpoint is used instead of deriving a reporting period from
-announcement timestamps. NSE exposes the quarter covered and broadcast date
-separately, which is the correct boundary for canonical earnings events.
-"""
+"""Download NSE corporate financial-results filings with explicit reporting periods."""
 from __future__ import annotations
 
 import argparse
+import time
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from nse import NSE
+import requests
+
+
+NSE_HOME = "https://www.nseindia.com"
+FINANCIAL_RESULTS_URL = f"{NSE_HOME}/api/corporates-financial-results"
 
 
 def _parse_date(value: object) -> date | None:
@@ -32,6 +32,25 @@ def _parse_datetime(value: object) -> datetime | None:
     return parsed.to_pydatetime()
 
 
+def _session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 Chrome/153.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"{NSE_HOME}/companies-listing/corporate-filings-financial-results",
+            "Connection": "keep-alive",
+        }
+    )
+    response = session.get(NSE_HOME, timeout=30)
+    response.raise_for_status()
+    return session
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True)
@@ -40,76 +59,70 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    start = datetime.strptime(args.start, "%Y-%m-%d")
-    end = datetime.strptime(args.end, "%Y-%m-%d")
+    start = datetime.strptime(args.start, "%Y-%m-%d").date()
+    end = datetime.strptime(args.end, "%Y-%m-%d").date()
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
     rows: list[dict] = []
-    with NSE("", server=True, timeout=45, use_requests_library=True) as nse:
+    session = _session()
+
+    for index, symbol in enumerate(symbols, start=1):
         try:
-            # Fetch the financial-results metadata once for the requested broadcast-date
-            # window, then restrict locally to NIFTY 50. The endpoint exposes the
-            # reporting-period end separately from the broadcast timestamp.
-            records = nse.financial_results(
-                segment="equities",
-                period="quarterly",
-                symbol=None,
-                from_date=start,
-                to_date=end,
+            response = session.get(
+                FINANCIAL_RESULTS_URL,
+                params={"index": "equities", "symbol": symbol, "period": "Quarterly"},
+                timeout=45,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            records = payload.get("data", []) if isinstance(payload, dict) else []
+
+            for record in records:
+                row = dict(record)
+                period_ended = _parse_date(row.get("toDate"))
+                announcement_datetime = _parse_datetime(
+                    row.get("broadCastDate") or row.get("filingDate")
+                )
+                if period_ended is None or announcement_datetime is None:
+                    continue
+                announcement_date = announcement_datetime.date()
+                if announcement_date < start or announcement_date > end:
+                    continue
+
+                row["symbol"] = symbol
+                row["period_ended"] = period_ended
+                row["announcement_datetime"] = announcement_datetime
+                row["document_type"] = "Financial Results"
+                row["consolidated_status"] = str(row.get("consolidated") or "").strip()
+                row["announcement_text"] = " ".join(
+                    str(row.get(key) or "").strip()
+                    for key in (
+                        "relatingTo",
+                        "audited",
+                        "consolidated",
+                        "period",
+                        "financialYear",
+                    )
+                ).strip()
+                row["filing_url"] = str(
+                    row.get("xbrl") or row.get("xbrl_attachment") or ""
+                )
+                row["source"] = "NSE financial results"
+                rows.append(row)
+
+            print(
+                f"[{index}/{len(symbols)}] {symbol}: "
+                f"records={len(records)} retained={sum(1 for r in rows if r.get('symbol') == symbol)}",
+                flush=True,
             )
         except Exception as exc:
-            raise SystemExit(f"NSE financial-results request failed: {exc}") from exc
-
-        for record in records or []:
-            row = dict(record)
-            row_symbol = str(row.get("symbol") or "").strip().upper()
-            if row_symbol not in symbols:
-                continue
-
-            period_ended = _parse_date(
-                row.get("toDate")
-                or row.get("to_date")
-                or row.get("periodEnded")
-                or row.get("period_ended")
-            )
-            announcement_datetime = _parse_datetime(
-                row.get("broadCastDate") or row.get("broadcastDate")
-                or row.get("broadcastDateTime")
-                or row.get("an_dt")
-                or row.get("sort_date")
-            )
-            if period_ended is None:
-                continue
-
-            row["symbol"] = row_symbol
-            row["period_ended"] = period_ended
-            row["announcement_datetime"] = announcement_datetime
-            row["document_type"] = "Financial Results"
-            row["consolidated_status"] = str(row.get("consolidated") or "").strip()
-            row["announcement_text"] = " ".join(
-                str(row.get(key) or "").strip()
-                for key in ("subject", "relatingTo", "audited", "consolidated", "period", "financialYear")
-            ).strip()
-            row["filing_url"] = str(
-                row.get("xbrl")
-                or row.get("xbrlFile")
-                or row.get("attchmntFile")
-                or ""
-            )
-            row["source"] = "NSE financial results"
-            rows.append(row)
-
-        print(
-            f"NSE financial-results records={len(records or [])}, "
-            f"NIFTY50 retained={len(rows)}",
-            flush=True,
-        )
+            print(f"[{index}/{len(symbols)}] {symbol}: ERROR {exc}", flush=True)
+        time.sleep(0.2)
 
     df = pd.DataFrame(rows)
     if df.empty:
         raise SystemExit("NSE returned no financial-results filings for the requested range")
 
-    # Keep distinct filings, including standalone/consolidated variants.
     df = df.drop_duplicates()
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
