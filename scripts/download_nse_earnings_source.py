@@ -84,14 +84,11 @@ def main() -> None:
             row["symbol"] = row_symbol
             row["period_ended"] = period_ended
             row["announcement_datetime"] = announcement_datetime
-            row["document_type"] = str(
-                row.get("subject")
-                or row.get("relatingTo")
-                or "Financial Results"
-            )
+            row["document_type"] = "Financial Results"
+            row["consolidated_status"] = str(row.get("consolidated") or "").strip()
             row["announcement_text"] = " ".join(
                 str(row.get(key) or "").strip()
-                for key in ("subject", "relatingTo", "audited", "consolidated", "period")
+                for key in ("subject", "relatingTo", "audited", "consolidated", "period", "financialYear")
             ).strip()
             row["filing_url"] = str(
                 row.get("xbrl")
