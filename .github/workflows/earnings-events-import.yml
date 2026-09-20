@@ -1,0 +1,67 @@
+name: EarningsOS earnings event import
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: "Public HTTPS URL to the historical earnings parquet/CSV source"
+        required: true
+        type: string
+      filename:
+        description: "Downloaded filename"
+        required: false
+        default: "earnings_source.parquet"
+        type: string
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install API/database dependencies
+        run: python -m pip install -r apps/api/requirements.txt pyarrow pandas
+
+      - name: Download historical earnings source
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+          SOURCE_FILE: ${{ inputs.filename }}
+        run: |
+          python - <<'PY'
+          import os
+          import urllib.request
+          url = os.environ["SOURCE_URL"]
+          path = os.environ["SOURCE_FILE"]
+          if not url.startswith("https://"):
+              raise SystemExit("source_url must use HTTPS")
+          urllib.request.urlretrieve(url, path)
+          print(f"downloaded {path}")
+          PY
+
+      - name: Upgrade database schema
+        run: PYTHONPATH=. alembic -c alembic.ini upgrade head
+
+      - name: Build and persist canonical earnings events
+        run: |
+          PYTHONPATH=. python scripts/build_earnings_events.py             --input "${{ inputs.filename }}"             --output-dir data/processed             --persist
+
+      - name: Validate canonical event keys
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          events = pd.read_parquet("data/processed/earnings_events.parquet")
+          documents = pd.read_parquet("data/processed/earnings_documents.parquet")
+          assert events["event_key"].is_unique
+          assert documents["document_id"].is_unique
+          print(f"events={len(events)} documents={len(documents)}")
+          print(events[events["symbol"].eq("RELIANCE")].tail(10).to_string(index=False))
+          PY
