@@ -73,7 +73,7 @@ def main() -> None:
                 or row.get("period_ended")
             )
             announcement_datetime = _parse_datetime(
-                row.get("broadcastDate")
+                row.get("broadCastDate") or row.get("broadcastDate")
                 or row.get("broadcastDateTime")
                 or row.get("an_dt")
                 or row.get("sort_date")
