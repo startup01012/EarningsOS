@@ -11,12 +11,14 @@ repo_root = Path(__file__).resolve().parents[3]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-try:
-    from apps.api.main import app  # noqa: E402
-except Exception as exc:  # pragma: no cover - deployment diagnostic
-    diagnostic_app = FastAPI(title="EarningsOS API bootstrap diagnostic")
+# Keep a statically discoverable top-level ASGI entrypoint for Vercel.
+app = FastAPI(title="EarningsOS API")
 
-    @diagnostic_app.get("/{path:path}")
+try:
+    from apps.api.main import app as application  # noqa: E402
+    app = application
+except Exception as exc:  # pragma: no cover - deployment diagnostic
+    @app.get("/{path:path}")
     def bootstrap_error(path: str):
         return {
             "status": "error",
@@ -25,5 +27,3 @@ except Exception as exc:  # pragma: no cover - deployment diagnostic
             "error": str(exc),
             "path": path,
         }
-
-    app = diagnostic_app
