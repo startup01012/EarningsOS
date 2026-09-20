@@ -40,38 +40,26 @@ def main() -> None:
     symbols = {s.strip().upper() for s in args.symbols.split(",") if s.strip()}
 
     rows: list[dict] = []
-    window_start = start
 
     with NSE("", server=True, timeout=45, use_requests_library=True) as nse:
-        # The NSE client/API returns only a limited recent slice for a very large
-        # date window. Query bounded windows so the full historical range is
-        # covered deterministically.
-        while window_start <= end:
-            window_end = min(window_start + timedelta(days=119), end)
+        for index, symbol in enumerate(sorted(symbols), start=1):
             try:
+                # Do not pass from/to filters to the NSE client. The API returns
+                # a bounded recent slice when those filters are supplied. Fetch
+                # the symbol's complete quarterly result history and filter the
+                # requested announcement window locally.
                 records = nse.financial_results(
                     segment="equities",
                     period="quarterly",
-                    symbol=None,
-                    from_date=window_start,
-                    to_date=window_end,
+                    symbol=symbol,
                 )
             except Exception as exc:
-                print(
-                    f"financial-results window failed "
-                    f"{window_start.date()}..{window_end.date()}: {exc}",
-                    flush=True,
-                )
-                window_start = window_end + timedelta(days=1)
+                print(f"[{index}/{len(symbols)}] {symbol}: ERROR {exc}", flush=True)
                 continue
 
-            retained_window = 0
+            retained = 0
             for record in records or []:
                 row = dict(record)
-                symbol = str(row.get("symbol") or "").strip().upper()
-                if symbol not in symbols:
-                    continue
-
                 period_ended = _parse_date(row.get("toDate"))
                 announcement_datetime = _parse_datetime(
                     row.get("broadCastDate") or row.get("filingDate")
@@ -101,14 +89,13 @@ def main() -> None:
                 )
                 row["source"] = "NSE financial results"
                 rows.append(row)
-                retained_window += 1
+                retained += 1
 
             print(
-                f"window {window_start.date()}..{window_end.date()}: "
-                f"records={len(records or [])} retained={retained_window}",
+                f"[{index}/{len(symbols)}] {symbol}: "
+                f"records={len(records or [])} retained={retained}",
                 flush=True,
             )
-            window_start = window_end + timedelta(days=1)
 
     df = pd.DataFrame(rows)
     if df.empty:
