@@ -90,7 +90,7 @@ def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
         .join(Stock, Stock.id == NewsArticle.stock_id)
         .where(
             Stock.symbol == symbol,
-            NewsArticle.published_at <= as_of,
+            NewsArticle.published_at < as_of,
             SentimentScore.model_name == "ProsusAI/finbert",
         )
         .order_by(NewsArticle.published_at.desc())
@@ -105,7 +105,7 @@ def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
             "article_count": 0,
             "model": "ProsusAI/finbert",
             "boundary": _iso(as_of),
-            "method": "published_at <= boundary; no future information",
+            "method": "published_at < boundary; no result-timestamp information",
         }
 
     positive = sum(float(score.positive_probability or 0) for _, score in rows) / len(rows)
@@ -125,7 +125,7 @@ def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
         "neutral_probability": round(neutral, 4),
         "model": "ProsusAI/finbert",
         "boundary": _iso(as_of),
-        "method": "mean FinBERT probabilities with published_at <= boundary",
+        "method": "mean FinBERT probabilities with published_at < boundary",
     }
 
 
