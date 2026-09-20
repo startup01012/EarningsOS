@@ -224,6 +224,12 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
         result_dt = primary_row["__announcement_datetime"] if primary_row is not None else None
 
         types = set(group["__classified_type"].tolist())
+        document_times = [
+            value for value in group["__announcement_datetime"].tolist()
+            if value is not None and not pd.isna(value)
+        ]
+        first_document_datetime = min(document_times) if document_times else None
+        last_document_datetime = max(document_times) if document_times else None
         quality_flag = "OK"
         if len(primary_candidates) > 1:
             quality_flag = "MULTIPLE_PRIMARY_RESULTS"
@@ -245,8 +251,8 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "has_media_release": "media_release" in types,
             "has_earnings_call": "earnings_call" in types,
             "has_transcript": "earnings_call_transcript" in types,
-            "first_document_datetime": group["__announcement_datetime"].min(),
-            "last_document_datetime": group["__announcement_datetime"].max(),
+            "first_document_datetime": first_document_datetime,
+            "last_document_datetime": last_document_datetime,
             "quality_flag": quality_flag,
         })
 
