@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from apps.api.config import settings
-from apps.api.db.session import SessionLocal
+from apps.api.db.session import get_session
 from apps.api.intelligence import router as intelligence_router
 
 
@@ -41,7 +41,7 @@ def health():
 
 @app.get("/health/db")
 def database_health():
-    db = SessionLocal()
+    db = get_session()
     try:
         result = db.execute(text("SELECT 1")).scalar()
         return {
