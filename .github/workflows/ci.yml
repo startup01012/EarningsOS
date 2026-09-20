@@ -42,7 +42,7 @@ jobs:
           fi
           echo "DATABASE_URL secret is present (value is not printed)."
       - name: Install API/database dependencies
-        run: python -m pip install -r apps/api/requirements.txt pyarrow pandas requests nse
+        run: python -m pip install -r apps/api/requirements.txt pyarrow pandas requests jugaad-data
       - name: Upgrade Alembic schema
         run: PYTHONPATH=. alembic -c alembic.ini upgrade head
       - name: Verify canonical schema and current counts
