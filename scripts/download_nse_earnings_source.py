@@ -1,145 +1,116 @@
-"""Download NSE corporate announcements for the NIFTY 50 and retain earnings-related records."""
+"""Download NSE financial-results filings with explicit reporting periods.
+
+The financial-results endpoint is used instead of deriving a reporting period from
+announcement timestamps. NSE exposes the quarter covered and broadcast date
+separately, which is the correct boundary for canonical earnings events.
+"""
 from __future__ import annotations
 
 import argparse
-import time
-from datetime import date, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-import requests
-
-NSE_PAGE = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
-NSE_API = "https://www.nseindia.com/api/corporate-announcements"
-KEYWORDS = (
-    "financial result",
-    "financial results",
-    "quarterly result",
-    "quarterly results",
-    "audited result",
-    "unaudited result",
-    "result update",
-    "results",
-    "board meeting",
-)
+from nse import NSE
 
 
-def session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
-            ),
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": NSE_PAGE,
-        }
-    )
-    s.get(NSE_PAGE, timeout=30)
-    return s
+def _parse_date(value: object) -> date | None:
+    if value is None or str(value).strip() == "":
+        return None
+    parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
 
 
-def windows(start: date, end: date, days: int = 30):
-    cur = start
-    while cur <= end:
-        nxt = min(end, cur + timedelta(days=days - 1))
-        yield cur, nxt
-        cur = nxt + timedelta(days=1)
+def _parse_datetime(value: object) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    parsed = pd.to_datetime(value, errors="coerce", utc=True, dayfirst=True)
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime()
 
 
-def fetch(s: requests.Session, start: date, end: date):
-    params = {
-        "index": "equities",
-        "from_date": start.strftime("%d-%m-%Y"),
-        "to_date": end.strftime("%d-%m-%Y"),
-    }
-    for attempt in range(4):
-        try:
-            r = s.get(NSE_API, params=params, timeout=45)
-            r.raise_for_status()
-            payload = r.json()
-            if isinstance(payload, dict):
-                payload = payload.get("data", payload.get("results", []))
-            return payload if isinstance(payload, list) else []
-        except Exception as exc:
-            print(
-                f"NSE request failed {start}..{end} attempt={attempt + 1}: {exc}",
-                flush=True,
-            )
-            if attempt == 3:
-                raise
-            time.sleep(2**attempt)
-    return []
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", required=True)
+    parser.add_argument("--end", required=True)
+    parser.add_argument("--symbols", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
 
+    start = datetime.strptime(args.start, "%Y-%m-%d")
+    end = datetime.strptime(args.end, "%Y-%m-%d")
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--start", required=True)
-    ap.add_argument("--end", required=True)
-    ap.add_argument("--symbols", required=True)
-    ap.add_argument("--output", required=True)
-    args = ap.parse_args()
-
-    start = date.fromisoformat(args.start)
-    end = date.fromisoformat(args.end)
-    symbols = {
-        s.strip().upper()
-        for s in args.symbols.split(",")
-        if s.strip()
-    }
-    s = session()
-    rows = []
-
-    for a, b in windows(start, end):
-        batch = fetch(s, a, b)
-        for row in batch:
-            symbol = str(
-                row.get("symbol") or row.get("sym") or ""
-            ).strip().upper()
-            desc = str(
-                row.get("desc")
-                or row.get("subject")
-                or row.get("description")
-                or ""
-            ).strip()
-            details = str(row.get("attchmntText") or "").strip()
-
-            searchable_text = f"{desc} {details}".strip()
-            if symbol not in symbols or not any(
-                keyword in searchable_text.lower() for keyword in KEYWORDS
-            ):
+    rows: list[dict] = []
+    with NSE("", server=True, timeout=45, use_requests_library=True) as nse:
+        for symbol in symbols:
+            try:
+                records = nse.financial_results(
+                    segment="equities",
+                    period="quarterly",
+                    symbol=symbol,
+                    from_date=start,
+                    to_date=end,
+                )
+            except Exception as exc:
+                print(f"NSE financial-results failed symbol={symbol}: {exc}", flush=True)
                 continue
 
-            announcement_datetime = row.get("an_dt") or row.get("sort_date")
-            filing_url = row.get("attchmntFile") or ""
+            for record in records or []:
+                row = dict(record)
+                row_symbol = str(row.get("symbol") or symbol).strip().upper()
+                period_ended = _parse_date(
+                    row.get("toDate")
+                    or row.get("to_date")
+                    or row.get("periodEnded")
+                    or row.get("period_ended")
+                )
+                announcement_datetime = _parse_datetime(
+                    row.get("broadcastDate")
+                    or row.get("broadcastDateTime")
+                    or row.get("an_dt")
+                    or row.get("sort_date")
+                )
+                if row_symbol not in symbols or period_ended is None:
+                    continue
 
-            normalized = dict(row)
-            normalized["symbol"] = symbol
-            normalized["document_type"] = desc
-            normalized["announcement_text"] = searchable_text
-            normalized["announcement_datetime"] = announcement_datetime
-            normalized["filing_url"] = filing_url
-            normalized["source"] = "NSE corporate announcements"
-            rows.append(normalized)
+                row["symbol"] = row_symbol
+                row["period_ended"] = period_ended
+                row["announcement_datetime"] = announcement_datetime
+                row["document_type"] = str(
+                    row.get("subject")
+                    or row.get("relatingTo")
+                    or "Financial Results"
+                )
+                row["announcement_text"] = " ".join(
+                    str(row.get(key) or "").strip()
+                    for key in ("subject", "relatingTo", "audited", "consolidated", "period")
+                ).strip()
+                row["filing_url"] = str(
+                    row.get("xbrl")
+                    or row.get("xbrlFile")
+                    or row.get("attchmntFile")
+                    or ""
+                )
+                row["source"] = "NSE financial results"
+                rows.append(row)
 
-        print(
-            f"{a}..{b}: {len(batch)} announcements, retained={len(rows)}",
-            flush=True,
-        )
+            print(f"{symbol}: financial-results rows={len(records or [])}", flush=True)
 
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise SystemExit("NSE returned no financial-results filings for the requested range")
+
+    # Keep distinct filings, including standalone/consolidated variants.
+    df = df.drop_duplicates()
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(rows).drop_duplicates()
-
-    if df.empty:
-        raise SystemExit(
-            "NSE returned no earnings-related announcements for the requested range"
-        )
-
     df.to_parquet(out, index=False)
     print(f"saved {len(df)} rows to {out}")
+    print(f"periods={df['period_ended'].nunique()} symbols={df['symbol'].nunique()}")
 
 
 if __name__ == "__main__":
