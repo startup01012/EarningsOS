@@ -289,15 +289,16 @@ def intelligence(
                 ).scalar_one_or_none()
             boundary = event.result_announcement_datetime if event else None
 
+        forecasts = _forecasts(db, symbol)
         return {
             "symbol": symbol,
             "company_name": stock.company_name,
             "market": _latest_price(db, symbol),
             "baseline": _baseline(db, symbol, boundary),
             "forecasting": {
-                "available": bool(_forecasts(db, symbol)),
+                "available": bool(forecasts),
                 "pretrained_only": True,
-                "stored_forecasts": _forecasts(db, symbol),
+                "stored_forecasts": forecasts,
             },
             "earnings_event": (
                 {
@@ -323,7 +324,7 @@ def intelligence(
             ),
             "data_boundary": _iso(boundary),
 
-            "leakage_policy": "The default data_boundary is the selected event's result_announcement_datetime. News is filtered by published_at <= data_boundary. Post-result material must not be used for pre-result features.",
+            "leakage_policy": "The default data_boundary is the selected event's result_announcement_datetime. News is filtered by published_at < data_boundary. Post-result material must not be used for pre-result features.",
         }
     finally:
         db.close()
