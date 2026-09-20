@@ -2,16 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-import requests
-
-
-NSE_HOME = "https://www.nseindia.com"
-FINANCIAL_RESULTS_URL = f"{NSE_HOME}/api/corporates-financial-results"
+from nse import NSE
 
 
 def _parse_date(value: object) -> date | None:
@@ -32,25 +27,6 @@ def _parse_datetime(value: object) -> datetime | None:
     return parsed.to_pydatetime()
 
 
-def _session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 Chrome/153.0 Safari/537.36"
-            ),
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": f"{NSE_HOME}/companies-listing/corporate-filings-financial-results",
-            "Connection": "keep-alive",
-        }
-    )
-    response = session.get(NSE_HOME, timeout=30)
-    response.raise_for_status()
-    return session
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True)
@@ -59,34 +35,50 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    start = datetime.strptime(args.start, "%Y-%m-%d").date()
-    end = datetime.strptime(args.end, "%Y-%m-%d").date()
-    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    start = datetime.strptime(args.start, "%Y-%m-%d")
+    end = datetime.strptime(args.end, "%Y-%m-%d")
+    symbols = {s.strip().upper() for s in args.symbols.split(",") if s.strip()}
 
     rows: list[dict] = []
-    session = _session()
+    window_start = start
 
-    for index, symbol in enumerate(symbols, start=1):
-        try:
-            response = session.get(
-                FINANCIAL_RESULTS_URL,
-                params={"index": "equities", "symbol": symbol, "period": "Quarterly"},
-                timeout=45,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            records = payload.get("data", []) if isinstance(payload, dict) else []
+    with NSE("", server=True, timeout=45, use_requests_library=True) as nse:
+        # The NSE client/API returns only a limited recent slice for a very large
+        # date window. Query bounded windows so the full historical range is
+        # covered deterministically.
+        while window_start <= end:
+            window_end = min(window_start + timedelta(days=119), end)
+            try:
+                records = nse.financial_results(
+                    segment="equities",
+                    period="quarterly",
+                    symbol=None,
+                    from_date=window_start,
+                    to_date=window_end,
+                )
+            except Exception as exc:
+                print(
+                    f"financial-results window failed "
+                    f"{window_start.date()}..{window_end.date()}: {exc}",
+                    flush=True,
+                )
+                window_start = window_end + timedelta(days=1)
+                continue
 
-            for record in records:
+            retained_window = 0
+            for record in records or []:
                 row = dict(record)
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if symbol not in symbols:
+                    continue
+
                 period_ended = _parse_date(row.get("toDate"))
                 announcement_datetime = _parse_datetime(
                     row.get("broadCastDate") or row.get("filingDate")
                 )
                 if period_ended is None or announcement_datetime is None:
                     continue
-                announcement_date = announcement_datetime.date()
-                if announcement_date < start or announcement_date > end:
+                if not (start.date() <= announcement_datetime.date() <= end.date()):
                     continue
 
                 row["symbol"] = symbol
@@ -109,15 +101,14 @@ def main() -> None:
                 )
                 row["source"] = "NSE financial results"
                 rows.append(row)
+                retained_window += 1
 
             print(
-                f"[{index}/{len(symbols)}] {symbol}: "
-                f"records={len(records)} retained={sum(1 for r in rows if r.get('symbol') == symbol)}",
+                f"window {window_start.date()}..{window_end.date()}: "
+                f"records={len(records or [])} retained={retained_window}",
                 flush=True,
             )
-        except Exception as exc:
-            print(f"[{index}/{len(symbols)}] {symbol}: ERROR {exc}", flush=True)
-        time.sleep(0.2)
+            window_start = window_end + timedelta(days=1)
 
     df = pd.DataFrame(rows)
     if df.empty:
