@@ -52,3 +52,13 @@ def test_baseline_score_is_bounded():
 
     assert 0 <= result["score"] <= 100
     assert result["label"] == "positive"
+
+
+def test_baseline_requires_explicit_result_boundary():
+    class EmptyDB:
+        pass
+
+    result = _baseline(EmptyDB(), "RELIANCE", None)
+    assert result["available"] is False
+    assert result["boundary"] is None
+    assert "result_announcement_datetime" in result["method"]
