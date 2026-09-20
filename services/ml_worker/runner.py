@@ -9,7 +9,7 @@ from time import perf_counter
 from sqlalchemy import select
 
 from apps.api.db.models import Forecast, ModelRegistry, ModelRun, PriceBar, Stock
-from apps.api.db.session import SessionLocal
+from apps.api.db.session import get_session
 from services.forecasting import (
     Chronos2Adapter,
     FinCastAdapter,
@@ -189,7 +189,7 @@ def run_model(
 ) -> dict:
     adapter = _adapter(model_name)
     model_key = _model_key(model_name)
-    db = SessionLocal()
+    db = get_session()
     summary = {"model": model_name, "model_key": model_key, "success": 0, "failed": 0, "errors": []}
 
     try:
