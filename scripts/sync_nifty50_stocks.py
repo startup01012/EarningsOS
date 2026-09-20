@@ -43,14 +43,19 @@ def main() -> int:
     try:
         existing_by_symbol = {s.symbol: s for s in db.scalars(select(Stock)).all()}
         existing_isins = {s.isin: s for s in existing_by_symbol.values() if s.isin}
+        pending_symbols: set[str] = set()
+        pending_isins: set[str] = set()
 
-        for row in df.to_dict("records"):
+        # NSE financial-results contains multiple filings per symbol/period.
+        # Deduplicate identities before inserting so repeated rows cannot violate
+        # the unique symbol/ISIN constraints within the same transaction.
+        for row in df.drop_duplicates(subset=["symbol"]).to_dict("records"):
             symbol = _first(row, "symbol").upper()
-            if not symbol or symbol in existing_by_symbol:
+            if not symbol or symbol in existing_by_symbol or symbol in pending_symbols:
                 continue
 
             isin = _first(row, "sm_isin", "isin", "ISIN Code") or None
-            if isin and isin in existing_isins:
+            if isin and (isin in existing_isins or isin in pending_isins):
                 continue
 
             company_name = _first(row, "sm_name", "company_name", "Company Name") or symbol
@@ -66,6 +71,9 @@ def main() -> int:
                     active=True,
                 )
             )
+            pending_symbols.add(symbol)
+            if isin:
+                pending_isins.add(isin)
             inserted += 1
 
         db.commit()
