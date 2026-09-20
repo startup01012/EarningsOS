@@ -38,7 +38,7 @@ jobs:
             exit 1
           fi
       - name: Install API/database dependencies
-        run: python -m pip install -r apps/api/requirements.txt pyarrow pandas requests
+        run: python -m pip install -r apps/api/requirements.txt pyarrow pandas requests nse
       - name: Download NSE earnings source
         run: |
           PYTHONPATH=. python scripts/download_nse_earnings_source.py \
