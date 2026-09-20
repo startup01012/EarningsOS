@@ -1,0 +1,7 @@
+# Heavy pretrained inference environment. Not installed by the Vercel/Render API.
+yfinance>=1.7,<2
+transformers>=4.45,<5
+torch>=2.2,<3
+feedparser>=6.0,<7
+chronos-forecasting>=2,<3
+kronos-model-arch==0.1.0
