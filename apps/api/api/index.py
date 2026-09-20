@@ -18,12 +18,19 @@ try:
     from apps.api.main import app as application  # noqa: E402
     app = application
 except Exception as exc:  # pragma: no cover - deployment diagnostic
+    _bootstrap_error_type = type(exc).__name__
+    _bootstrap_error_message = str(exc)
+
     @app.get("/{path:path}")
-    def bootstrap_error(path: str):
+    def bootstrap_error(
+        path: str,
+        error_type: str = _bootstrap_error_type,
+        error_message: str = _bootstrap_error_message,
+    ):
         return {
             "status": "error",
             "phase": "api_bootstrap",
-            "error_type": type(exc).__name__,
-            "error": str(exc),
+            "error_type": error_type,
+            "error": error_message,
             "path": path,
         }
