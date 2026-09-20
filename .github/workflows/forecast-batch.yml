@@ -1,6 +1,9 @@
 name: EarningsOS pretrained forecast batch
 
 on:
+  push:
+    paths:
+      - ".github/workflows/forecast-batch.yml"
   workflow_dispatch:
     inputs:
       models:
@@ -46,6 +49,9 @@ jobs:
 
       - name: Install pretrained ML dependencies
         run: python -m pip install -r requirements/ml.txt
+
+      - name: Upgrade database schema
+        run: PYTHONPATH=. alembic -c alembic.ini upgrade head
 
       - name: Run validated forecast batch
         run: python scripts/run_forecasts.py
