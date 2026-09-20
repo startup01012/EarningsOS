@@ -46,59 +46,67 @@ def main() -> None:
 
     rows: list[dict] = []
     with NSE("", server=True, timeout=45, use_requests_library=True) as nse:
-        for symbol in symbols:
-            try:
-                records = nse.financial_results(
-                    segment="equities",
-                    period="quarterly",
-                    symbol=symbol,
-                    from_date=start,
-                    to_date=end,
-                )
-            except Exception as exc:
-                print(f"NSE financial-results failed symbol={symbol}: {exc}", flush=True)
+        try:
+            # Fetch the financial-results metadata once for the requested broadcast-date
+            # window, then restrict locally to NIFTY 50. The endpoint exposes the
+            # reporting-period end separately from the broadcast timestamp.
+            records = nse.financial_results(
+                segment="equities",
+                period="quarterly",
+                symbol=None,
+                from_date=start,
+                to_date=end,
+            )
+        except Exception as exc:
+            raise SystemExit(f"NSE financial-results request failed: {exc}") from exc
+
+        for record in records or []:
+            row = dict(record)
+            row_symbol = str(row.get("symbol") or "").strip().upper()
+            if row_symbol not in symbols:
                 continue
 
-            for record in records or []:
-                row = dict(record)
-                row_symbol = str(row.get("symbol") or symbol).strip().upper()
-                period_ended = _parse_date(
-                    row.get("toDate")
-                    or row.get("to_date")
-                    or row.get("periodEnded")
-                    or row.get("period_ended")
-                )
-                announcement_datetime = _parse_datetime(
-                    row.get("broadcastDate")
-                    or row.get("broadcastDateTime")
-                    or row.get("an_dt")
-                    or row.get("sort_date")
-                )
-                if row_symbol not in symbols or period_ended is None:
-                    continue
+            period_ended = _parse_date(
+                row.get("toDate")
+                or row.get("to_date")
+                or row.get("periodEnded")
+                or row.get("period_ended")
+            )
+            announcement_datetime = _parse_datetime(
+                row.get("broadcastDate")
+                or row.get("broadcastDateTime")
+                or row.get("an_dt")
+                or row.get("sort_date")
+            )
+            if period_ended is None:
+                continue
 
-                row["symbol"] = row_symbol
-                row["period_ended"] = period_ended
-                row["announcement_datetime"] = announcement_datetime
-                row["document_type"] = str(
-                    row.get("subject")
-                    or row.get("relatingTo")
-                    or "Financial Results"
-                )
-                row["announcement_text"] = " ".join(
-                    str(row.get(key) or "").strip()
-                    for key in ("subject", "relatingTo", "audited", "consolidated", "period")
-                ).strip()
-                row["filing_url"] = str(
-                    row.get("xbrl")
-                    or row.get("xbrlFile")
-                    or row.get("attchmntFile")
-                    or ""
-                )
-                row["source"] = "NSE financial results"
-                rows.append(row)
+            row["symbol"] = row_symbol
+            row["period_ended"] = period_ended
+            row["announcement_datetime"] = announcement_datetime
+            row["document_type"] = str(
+                row.get("subject")
+                or row.get("relatingTo")
+                or "Financial Results"
+            )
+            row["announcement_text"] = " ".join(
+                str(row.get(key) or "").strip()
+                for key in ("subject", "relatingTo", "audited", "consolidated", "period")
+            ).strip()
+            row["filing_url"] = str(
+                row.get("xbrl")
+                or row.get("xbrlFile")
+                or row.get("attchmntFile")
+                or ""
+            )
+            row["source"] = "NSE financial results"
+            rows.append(row)
 
-            print(f"{symbol}: financial-results rows={len(records or [])}", flush=True)
+        print(
+            f"NSE financial-results records={len(records or [])}, "
+            f"NIFTY50 retained={len(rows)}",
+            flush=True,
+        )
 
     df = pd.DataFrame(rows)
     if df.empty:
