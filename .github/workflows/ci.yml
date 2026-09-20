@@ -89,3 +89,34 @@ jobs:
               print(rows.tail(12).to_string(index=False))
           assert Path("data/processed/earnings_event_quality_report.csv").exists()
           PY
+
+  chronos-forecast:
+    needs: database-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FORECAST_MODELS: "chronos"
+      FORECAST_SYMBOLS: "ADANIENT,AXISBANK,HDFCBANK,INFY,RELIANCE"
+      FORECAST_HORIZONS: "1,5,10"
+      FORECAST_CONTEXT: "256"
+      CHRONOS_DEVICE: "cpu"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate DATABASE_URL secret
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL is unavailable to the forecast job."
+            exit 1
+          fi
+      - name: Install API/database dependencies
+        run: python -m pip install -r apps/api/requirements.txt
+      - name: Install Chronos dependencies
+        run: python -m pip install "chronos-forecasting>=2,<3"
+      - name: Run Chronos forecast batch
+        run: PYTHONPATH=. python scripts/run_forecasts.py
