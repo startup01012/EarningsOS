@@ -363,6 +363,16 @@ def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, 
         db.flush()
 
         document_ids = documents["document_id"].dropna().astype(str).tolist() if len(documents) else []
+        # Replace the document set for rebuilt events. This removes stale rows
+        # left by earlier source/classification versions while preserving all
+        # documents present in the current authoritative source.
+        if event_keys and document_ids:
+            db.execute(
+                delete(EarningsDocument).where(
+                    EarningsDocument.event_key.in_(event_keys),
+                    ~EarningsDocument.document_id.in_(document_ids),
+                )
+            )
         existing_documents = {
             document.document_id: document
             for document in db.scalars(
