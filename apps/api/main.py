@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -41,6 +41,8 @@ def health():
 
 @app.get("/health/db")
 def database_health():
+    if not settings.database_url:
+        raise HTTPException(status_code=503, detail="DATABASE_URL is not configured in the deployment environment.")
     db = get_session()
     try:
         result = db.execute(text("SELECT 1")).scalar()
