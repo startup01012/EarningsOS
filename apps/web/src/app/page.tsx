@@ -44,7 +44,7 @@ export default function Home() {
 
             <div className="mb-7 flex flex-wrap gap-2">
               {["NIFTY 50", "Upcoming", "Recent", "Watchlist"].map((filter, index) => (
-                <button key={filter} className={\`rounded-full border px-3.5 py-2 text-xs transition \${index === 0 ? "border-white/20 bg-white text-black" : "border-white/10 bg-white/[0.03] text-white/55 hover:bg-white/[0.07]"}\`}>{filter}</button>
+                <button key={filter} className={"rounded-full border px-3.5 py-2 text-xs transition " + (index === 0 ? "border-white/20 bg-white text-black" : "border-white/10 bg-white/[0.03] text-white/55 hover:bg-white/[0.07]")}>{filter}</button>
               ))}
             </div>
 
@@ -64,7 +64,7 @@ export default function Home() {
                 {layers.map((layer) => {
                   const active = layer.id === selected;
                   return (
-                    <button key={layer.id} onClick={() => setSelected(layer.id)} className={\`group rounded-xl border p-4 text-left transition \${active ? "border-blue-400/40 bg-blue-400/[0.07]" : "border-white/8 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"}\`}>
+                    <button key={layer.id} onClick={() => setSelected(layer.id)} className={"group rounded-xl border p-4 text-left transition " + (active ? "border-blue-400/40 bg-blue-400/[0.07]" : "border-white/8 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]")}>
                       <div className="mb-5 flex items-start justify-between"><span className="font-mono text-[10px] text-white/30">{layer.number}</span><span className="rounded-full bg-white/6 px-2 py-1 text-[9px] uppercase tracking-wider text-white/40">{layer.status}</span></div>
                       <div className="text-sm font-medium">{layer.title}</div><div className="mt-1 min-h-10 text-xs leading-5 text-white/40">{layer.subtitle}</div>
                       <div className="mt-4 flex items-end justify-between"><span className="text-lg font-semibold">{layer.value}</span><span className="text-[10px] text-white/30">{layer.detail}</span></div>
@@ -91,7 +91,7 @@ export default function Home() {
                 {watchlist.map((stock) => (
                   <div key={stock.symbol} className="flex items-center justify-between py-4">
                     <div><div className="font-mono text-xs font-medium">{stock.symbol}</div><div className="mt-1 text-[10px] text-white/30">{stock.name}</div></div>
-                    <div className="text-right"><div className="text-xs font-medium">₹{stock.price}</div><div className={\`mt-1 text-[10px] \${stock.change.startsWith("+") ? "text-emerald-300" : "text-rose-300"}\`}>{stock.change}</div></div>
+                    <div className="text-right"><div className="text-xs font-medium">₹{stock.price}</div><div className={"mt-1 text-[10px] " + (stock.change.startsWith("+") ? "text-emerald-300" : "text-rose-300")}>{stock.change}</div></div>
                   </div>
                 ))}
               </div>
