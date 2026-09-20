@@ -2,9 +2,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from apps.api.config import settings
-from apps.api.db.session import get_session
-from apps.api.intelligence import router as intelligence_router
+from config import settings
+from db.session import get_session
+from intelligence import router as intelligence_router
 
 
 app = FastAPI(
