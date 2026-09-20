@@ -19,3 +19,71 @@ jobs:
         run: python -m pip install -r apps/api/requirements.txt pytest pandas pyarrow
       - name: Run earnings and intelligence tests
         run: PYTHONPATH=.:apps/api pytest tests/test_earnings_events.py apps/api/test_intelligence.py -q
+
+  database-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NIFTY50_SYMBOLS: "ADANIENT,ADANIPORTS,APOLLOHOSP,ASIANPAINT,AXISBANK,BAJAJ-AUTO,BAJAJFINSV,BAJFINANCE,BEL,BHARTIARTL,CIPLA,COALINDIA,DRREDDY,EICHERMOT,ETERNAL,GRASIM,HCLTECH,HDFCBANK,HDFCLIFE,HEROMOTOCO,HINDALCO,HINDUNILVR,ICICIBANK,INDUSINDBK,INFY,ITC,JIOFIN,JSWSTEEL,KOTAKBANK,LT,M&M,MARUTI,MAXHEALTH,NTPC,NESTLEIND,ONGC,POWERGRID,RELIANCE,SBILIFE,SHRIRAMFIN,SBIN,SUNPHARMA,TATACONSUM,TATAMOTORS,TATASTEEL,TCS,TECHM,TITAN,TRENT,ULTRACEMCO,WIPRO"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate DATABASE_URL secret
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL is still unavailable to this pull-request workflow."
+            echo "Add it under Settings -> Secrets and variables -> Actions -> Repository secrets."
+            exit 1
+          fi
+          echo "DATABASE_URL secret is present (value is not printed)."
+      - name: Install API/database dependencies
+        run: python -m pip install -r apps/api/requirements.txt pyarrow pandas requests
+      - name: Upgrade Alembic schema
+        run: PYTHONPATH=. alembic -c alembic.ini upgrade head
+      - name: Verify canonical schema and current counts
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          url = os.environ["DATABASE_URL"]
+          if url.startswith("postgresql://"):
+              url = "postgresql+psycopg://" + url[len("postgresql://"):]
+          engine = create_engine(url, pool_pre_ping=True)
+          with engine.connect() as conn:
+              version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+              events = conn.execute(text("SELECT count(*) FROM earnings_events")).scalar_one()
+              documents = conn.execute(text("SELECT count(*) FROM earnings_documents")).scalar_one()
+              forecasts = conn.execute(text("SELECT count(*) FROM forecasts")).scalar_one()
+              print(f"alembic={version}")
+              print(f"earnings_events={events}")
+              print(f"earnings_documents={documents}")
+              print(f"forecasts={forecasts}")
+              assert version == "9f4b7a2c1d8e"
+          PY
+      - name: Download NSE historical earnings announcements
+        run: |
+          PYTHONPATH=. python scripts/download_nse_earnings_source.py             --start "2024-01-01"             --end "2026-09-20"             --symbols "$NIFTY50_SYMBOLS"             --output earnings_source.parquet
+      - name: Build and persist canonical earnings events
+        run: |
+          PYTHONPATH=. python scripts/build_earnings_events.py             --input earnings_source.parquet             --output-dir data/processed             --persist
+      - name: Validate event/document uniqueness and key companies
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          events = pd.read_parquet("data/processed/earnings_events.parquet")
+          documents = pd.read_parquet("data/processed/earnings_documents.parquet")
+          assert events["event_key"].is_unique
+          assert documents["document_id"].is_unique
+          print(f"events={len(events)} documents={len(documents)}")
+          for symbol in ("RELIANCE", "ADANIENT"):
+              rows = events[events["symbol"].eq(symbol)].sort_values("period_ended")
+              print(f"\n== {symbol} ==")
+              print(rows.tail(12).to_string(index=False))
+          assert Path("data/processed/earnings_event_quality_report.csv").exists()
+          PY
