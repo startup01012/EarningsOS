@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import time
 from pathlib import Path
 
@@ -98,7 +99,11 @@ def build_adapter(name: str, args):
     if name == "timesfm":
         return TimesFM25Adapter(device=args.device)
     if name == "kronos":
-        return KronosSmallAdapter(device=args.device, max_context=args.context_length, seed=args.seed)
+        return KronosSmallAdapter(
+            device=args.device,
+            max_context=args.context_length,
+            seed=args.seed,
+        )
     if name == "fincast":
         return FinCastAdapter(
             model_path=args.fincast_model_path,
@@ -108,7 +113,19 @@ def build_adapter(name: str, args):
     raise ValueError(f"unsupported model: {name}")
 
 
-def _paired_rows(symbol: str, model_name: str, cases: list[BacktestCase]):
+def _dependence_lag(horizon: int, stride: int) -> int:
+    """Estimate overlap lag for DM-style HAC statistics.
+
+    A horizon-10 forecast evaluated every 5 observations overlaps the next
+    forecast window, so lag 1 is required. Horizon-1 evaluated every 5
+    observations has no overlap and uses lag 0.
+    """
+    if horizon < 1 or stride < 1:
+        raise ValueError("horizon and stride must be >= 1")
+    return max(0, math.ceil(horizon / stride) - 1)
+
+
+def _paired_rows(symbol: str, model_name: str, cases: list[BacktestCase], stride: int):
     predictions = [case.predicted for case in cases]
     baselines = baseline_predictions(cases)
     rows = []
@@ -123,7 +140,7 @@ def _paired_rows(symbol: str, model_name: str, cases: list[BacktestCase]):
                 horizon=horizon,
                 regime="all",
                 symbol=symbol,
-                dependence_lag=0,
+                dependence_lag=_dependence_lag(horizon, stride),
             )
             rows.append(comparison)
     return rows
@@ -159,6 +176,7 @@ def main() -> None:
     print(f"Stocks: {symbols}")
     print(f"Models: {models}")
     print(f"Cases/stock/model: {args.max_cases} | Horizons: {HORIZONS} | Context: {args.context_length}")
+    print(f"Stride: {args.stride} | HAC overlap lags: {[ _dependence_lag(h, args.stride) for h in HORIZONS ]}")
     print("No training or fine-tuning is performed.")
 
     db = SessionLocal()
@@ -177,7 +195,7 @@ def main() -> None:
                         cases = _kronos_cases(symbol, adapter, args, db)
                     else:
                         cases = _close_cases(symbol, adapter, args, db)
-                    all_rows.extend(_paired_rows(symbol, model_name, cases))
+                    all_rows.extend(_paired_rows(symbol, model_name, cases, args.stride))
                     stock_count += 1
                     print(f"  {symbol}: {len(cases)} cases ({time.perf_counter() - started:.1f}s)")
 
@@ -194,6 +212,11 @@ def main() -> None:
                             "ci_low": row.ci_low,
                             "ci_high": row.ci_high,
                             "model_win_rate": row.model_win_rate,
+                            "dm_stat": row.dm_stat,
+                            "dm_pvalue": row.dm_pvalue,
+                            "model_directional_accuracy": row.model_directional_accuracy,
+                            "baseline_directional_accuracy": row.baseline_directional_accuracy,
+                            "directional_accuracy_diff": row.directional_accuracy_diff,
                             "stocks": stock_count,
                             "runtime_seconds": round(time.perf_counter() - model_started, 3),
                             "status": "ok",
@@ -214,6 +237,11 @@ def main() -> None:
                         "ci_low": "",
                         "ci_high": "",
                         "model_win_rate": "",
+                        "dm_stat": "",
+                        "dm_pvalue": "",
+                        "model_directional_accuracy": "",
+                        "baseline_directional_accuracy": "",
+                        "directional_accuracy_diff": "",
                         "stocks": stock_count,
                         "runtime_seconds": elapsed,
                         "status": f"error: {type(exc).__name__}: {exc}",
@@ -236,7 +264,9 @@ def main() -> None:
     for model in models:
         good = [
             row for row in output_rows
-            if row["model"] == model and row["status"] == "ok" and row["baseline"] == "last_close"
+            if row["model"] == model
+            and row["status"] == "ok"
+            and row["baseline"] == "last_close"
         ]
         passed = all(
             float(row["mean_loss_diff"]) < 0
