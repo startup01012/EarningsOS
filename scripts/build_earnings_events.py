@@ -111,7 +111,7 @@ def classify_document(document_type: str, announcement_text: str, filing_url: st
     if any(term in compact for term in ("media release", "press release", "media-release")):
         return Classification("media_release", None, False, True)
     if any(term in compact for term in ("revised financial results", "revised results", "rectification of financial results", "correction in financial results")):
-        return Classification("financial_results_correction", None, True, True)
+        return Classification("financial_results_correction", None, False, True)
     if any(term in compact for term in (
         "financial results",
         "financial result",
@@ -214,14 +214,18 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
         period_date = period_ended
         event_key = f"{symbol}_{period_date.isoformat()}"
 
-        primary = group[group["__primary"]].copy()
-        primary = primary.sort_values("__announcement_datetime", na_position="last")
-        primary_row = primary.iloc[0] if len(primary) else None
+        # Prefer original financial-results filings. A correction stays attached
+        # to the same event but must not replace the canonical result timestamp.
+        primary_candidates = group[group["__classified_type"].eq("financial_results")].copy()
+        if primary_candidates.empty:
+            primary_candidates = group[group["__classified_type"].eq("financial_results_correction")].copy()
+        primary_candidates = primary_candidates.sort_values("__announcement_datetime", na_position="last")
+        primary_row = primary_candidates.iloc[0] if len(primary_candidates) else None
         result_dt = primary_row["__announcement_datetime"] if primary_row is not None else None
 
         types = set(group["__classified_type"].tolist())
         quality_flag = "OK"
-        if len(primary) > 1:
+        if len(primary_candidates) > 1:
             quality_flag = "MULTIPLE_PRIMARY_RESULTS"
         elif result_dt is None:
             quality_flag = "MISSING_RESULT"
@@ -257,8 +261,8 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
                 "document_subtype": row["__subtype"],
                 "announcement_text": row["__announcement_text"],
                 "filing_url": row["__filing_url"],
-                "is_primary_result": bool(row["__primary"]),
-                "is_followup_document": bool(row["__followup"]),
+                "is_primary_result": bool(primary_row is not None and row["__document_id"] == primary_row["__document_id"]),
+                "is_followup_document": bool(row["__followup"] or (primary_row is not None and row["__document_id"] != primary_row["__document_id"])),
                 "source": row["__source"],
             })
 
@@ -271,7 +275,7 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "result_announcement_datetime": result_dt,
             "last_document_datetime": group["__announcement_datetime"].max(),
             "days_from_period_end": (result_dt.date() - period_date).days if result_dt else None,
-            "primary_result_count": len(primary),
+            "primary_result_count": len(primary_candidates),
             "classification_status": "OK",
             "quality_flag": quality_flag,
         })
