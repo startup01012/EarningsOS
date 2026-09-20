@@ -72,7 +72,7 @@ def _client() -> NSELive:
     return NSELive()
 
 
-def _windows(start: date, end: date, days: int = 7):
+def _windows(start: date, end: date, days: int = 30):
     current = start
     while current <= end:
         window_end = min(end, current + timedelta(days=days - 1))
