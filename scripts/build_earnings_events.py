@@ -125,15 +125,15 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     if not symbol_col:
         raise ValueError("Input must contain a symbol column")
-    if not period_col:
-        # We intentionally do not infer reporting periods from announcement timestamps.
-        # A later classification pass may recover an explicit 'quarter ended' date from text.
-        df["__period_ended"] = pd.NaT
+    if period_col:
+        period_values = [_parse_date(value) for value in df[period_col].tolist()]
     else:
-        df["__period_ended"] = df[period_col].map(_parse_date)
+        period_values = [None] * len(df)
+    df["__period_ended"] = pd.Series(period_values, index=df.index, dtype="object")
 
     df["__symbol"] = df[symbol_col].map(lambda x: _text(x).upper())
-    df["__announcement_datetime"] = df[announced_col].map(_parse_datetime) if announced_col else None
+    announced_values = [_parse_datetime(value) for value in df[announced_col].tolist()] if announced_col else [None] * len(df)
+    df["__announcement_datetime"] = pd.Series(announced_values, index=df.index, dtype="object")
     df["__document_type"] = df[type_col].map(_text) if type_col else ""
     df["__announcement_text"] = df[text_col].map(_text) if text_col else ""
     df["__filing_url"] = df[url_col].map(_text) if url_col else ""
@@ -148,8 +148,9 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     df = _normalize(df.copy())
     classifications = [
-        classify_document(row.__document_type, row.__announcement_text, row.__filing_url)
-        for row in df.itertuples(index=False)
+        classify_document(document_type, announcement_text, filing_url)
+        for document_type, announcement_text, filing_url
+        in df[["__document_type", "__announcement_text", "__filing_url"]].itertuples(index=False, name=None)
     ]
     df["__classified_type"] = [x.document_type for x in classifications]
     df["__subtype"] = [x.document_subtype for x in classifications]
@@ -218,20 +219,20 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "quality_flag": quality_flag,
         })
 
-        for row in group.itertuples(index=False):
+        for row in group.to_dict("records"):
             document_rows.append({
-                "document_id": row.__document_id,
+                "document_id": row["__document_id"],
                 "event_key": event_key,
                 "symbol": symbol,
                 "period_ended": period_date,
-                "announcement_datetime": row.__announcement_datetime,
-                "document_type": row.__classified_type,
-                "document_subtype": row.__subtype,
-                "announcement_text": row.__announcement_text,
-                "filing_url": row.__filing_url,
-                "is_primary_result": bool(row.__primary),
-                "is_followup_document": bool(row.__followup),
-                "source": row.__source,
+                "announcement_datetime": row["__announcement_datetime"],
+                "document_type": row["__classified_type"],
+                "document_subtype": row["__subtype"],
+                "announcement_text": row["__announcement_text"],
+                "filing_url": row["__filing_url"],
+                "is_primary_result": bool(row["__primary"]),
+                "is_followup_document": bool(row["__followup"]),
+                "source": row["__source"],
             })
 
         quality.append({
