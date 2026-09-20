@@ -18,6 +18,8 @@ class Settings(BaseSettings):
 
     llm_provider: str = ""
 
+    frontend_origins: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
