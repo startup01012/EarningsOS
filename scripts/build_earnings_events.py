@@ -221,6 +221,7 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
         primary_candidates = group[group["__classified_type"].eq("financial_results")].copy()
         if primary_candidates.empty:
             primary_candidates = group[group["__classified_type"].eq("financial_results_correction")].copy()
+        ambiguous_primary_count = 0
         if not primary_candidates.empty:
             normalized_consolidated = (
                 primary_candidates["__consolidated_status"].str.strip().str.lower()
@@ -233,6 +234,10 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
                 ["__consolidated_priority", "__announcement_datetime"],
                 na_position="last",
             )
+            best_priority = primary_candidates["__consolidated_priority"].min()
+            ambiguous_primary_count = int(
+                primary_candidates["__consolidated_priority"].eq(best_priority).sum()
+            )
         primary_row = primary_candidates.iloc[0] if len(primary_candidates) else None
         result_dt = primary_row["__announcement_datetime"] if primary_row is not None else None
 
@@ -244,7 +249,7 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
         first_document_datetime = min(document_times) if document_times else None
         last_document_datetime = max(document_times) if document_times else None
         quality_flag = "OK"
-        if len(primary_candidates) > 1:
+        if ambiguous_primary_count > 1:
             quality_flag = "MULTIPLE_PRIMARY_RESULTS"
         elif result_dt is None:
             quality_flag = "MISSING_RESULT"
@@ -296,7 +301,7 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "result_announcement_datetime": result_dt,
             "last_document_datetime": group["__announcement_datetime"].max(),
             "days_from_period_end": (result_dt.date() - period_date).days if result_dt else None,
-            "primary_result_count": len(primary_candidates),
+            "primary_result_count": 1 if primary_row is not None else 0,
             "classification_status": "OK",
             "quality_flag": quality_flag,
         })
