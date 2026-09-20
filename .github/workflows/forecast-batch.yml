@@ -1,5 +1,7 @@
 name: EarningsOS pretrained forecast batch
 
+# CI trigger: rerun after DATABASE_URL Actions secret configuration.
+
 on:
   push:
     paths:

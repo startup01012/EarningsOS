@@ -62,3 +62,21 @@ def test_baseline_requires_explicit_result_boundary():
     assert result["available"] is False
     assert result["boundary"] is None
     assert "result_announcement_datetime" in result["method"]
+
+
+def test_baseline_uses_strict_pre_result_boundary():
+    captured = []
+
+    class Result:
+        def all(self):
+            return []
+
+    class DB:
+        def execute(self, statement):
+            captured.append(str(statement))
+            return Result()
+
+    boundary = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    _baseline(DB(), "RELIANCE", boundary)
+    assert captured
+    assert "published_at <" in captured[0]

@@ -90,7 +90,7 @@ def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
         .join(Stock, Stock.id == NewsArticle.stock_id)
         .where(
             Stock.symbol == symbol,
-            NewsArticle.published_at <= as_of,
+            NewsArticle.published_at < as_of,
             SentimentScore.model_name == "ProsusAI/finbert",
         )
         .order_by(NewsArticle.published_at.desc())
@@ -105,7 +105,7 @@ def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
             "article_count": 0,
             "model": "ProsusAI/finbert",
             "boundary": _iso(as_of),
-            "method": "published_at <= boundary; no future information",
+            "method": "published_at < boundary; no result-timestamp information",
         }
 
     positive = sum(float(score.positive_probability or 0) for _, score in rows) / len(rows)
@@ -125,7 +125,7 @@ def _baseline(db, symbol: str, as_of: datetime | None) -> dict:
         "neutral_probability": round(neutral, 4),
         "model": "ProsusAI/finbert",
         "boundary": _iso(as_of),
-        "method": "mean FinBERT probabilities with published_at <= boundary",
+        "method": "mean FinBERT probabilities with published_at < boundary",
     }
 
 
@@ -289,15 +289,16 @@ def intelligence(
                 ).scalar_one_or_none()
             boundary = event.result_announcement_datetime if event else None
 
+        forecasts = _forecasts(db, symbol)
         return {
             "symbol": symbol,
             "company_name": stock.company_name,
             "market": _latest_price(db, symbol),
             "baseline": _baseline(db, symbol, boundary),
             "forecasting": {
-                "available": bool(_forecasts(db, symbol)),
+                "available": bool(forecasts),
                 "pretrained_only": True,
-                "stored_forecasts": _forecasts(db, symbol),
+                "stored_forecasts": forecasts,
             },
             "earnings_event": (
                 {
@@ -323,7 +324,7 @@ def intelligence(
             ),
             "data_boundary": _iso(boundary),
 
-            "leakage_policy": "The default data_boundary is the selected event's result_announcement_datetime. News is filtered by published_at <= data_boundary. Post-result material must not be used for pre-result features.",
+            "leakage_policy": "The default data_boundary is the selected event's result_announcement_datetime. News is filtered by published_at < data_boundary. Post-result material must not be used for pre-result features.",
         }
     finally:
         db.close()

@@ -15,8 +15,35 @@ from apps.api.db.session import get_session
 
 
 DATE_PATTERNS = [
-    re.compile(r"(?:quarter|period|year)\s+ended\s*[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4})", re.I),
-    re.compile(r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})\s+(?:quarter|period|year)\s+ended", re.I),
+    re.compile(
+        r"(?:quarter|period|year)(?:\s+and\s+year)?\s+ended"
+        r"\s*[:\-]?\s*(\d{1,2}(?:st|nd|rd|th)?[/-]\d{1,2}[/-]\d{4})",
+        re.I,
+    ),
+    re.compile(
+        r"(?:quarter|period|year)(?:\s+and\s+year)?\s+ended"
+        r"\s*[:\-]?\s*(\d{1,2}(?:st|nd|rd|th)?\s+"
+        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"(?:,)?\s+\d{4})",
+        re.I,
+    ),
+    re.compile(
+        r"(?:quarter|period|year)(?:\s+and\s+year)?\s+ended"
+        r"\s*[:\-]?\s*((?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4})",
+        re.I,
+    ),
+    re.compile(
+        r"(\d{1,2}(?:st|nd|rd|th)?\s+"
+        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"(?:,)?\s+\d{4})\s+(?:quarter|period|year)\s+ended",
+        re.I,
+    ),
+    re.compile(
+        r"((?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4})\s+(?:quarter|period|year)\s+ended",
+        re.I,
+    ),
 ]
 
 
@@ -84,7 +111,7 @@ def classify_document(document_type: str, announcement_text: str, filing_url: st
     if any(term in compact for term in ("media release", "press release", "media-release")):
         return Classification("media_release", None, False, True)
     if any(term in compact for term in ("revised financial results", "revised results", "rectification of financial results", "correction in financial results")):
-        return Classification("financial_results_correction", None, True, True)
+        return Classification("financial_results_correction", None, False, True)
     if any(term in compact for term in (
         "financial results",
         "financial result",
@@ -122,6 +149,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     url_col = _first_column(df, "filing_url", "url", "link", "Filing URL")
     source_col = _first_column(df, "source", "Source")
     fiscal_col = _first_column(df, "fiscal_period", "quarter", "fiscal_quarter")
+    consolidated_col = _first_column(df, "consolidated_status", "consolidated", "Consolidated / Non-Consolidated")
 
     if not symbol_col:
         raise ValueError("Input must contain a symbol column")
@@ -139,6 +167,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     df["__filing_url"] = df[url_col].map(_text) if url_col else ""
     df["__source"] = df[source_col].map(_text) if source_col else "earnings_pipeline"
     df["__fiscal_period"] = df[fiscal_col].map(_text) if fiscal_col else ""
+    df["__consolidated_status"] = df[consolidated_col].map(_text) if consolidated_col else ""
 
     missing_period = df["__period_ended"].isna()
     df.loc[missing_period, "__period_ended"] = df.loc[missing_period, "__announcement_text"].map(_extract_period_from_text)
@@ -187,14 +216,40 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
         period_date = period_ended
         event_key = f"{symbol}_{period_date.isoformat()}"
 
-        primary = group[group["__primary"]].copy()
-        primary = primary.sort_values("__announcement_datetime", na_position="last")
-        primary_row = primary.iloc[0] if len(primary) else None
+        # Prefer original financial-results filings. A correction stays attached
+        # to the same event but must not replace the canonical result timestamp.
+        primary_candidates = group[group["__classified_type"].eq("financial_results")].copy()
+        if primary_candidates.empty:
+            primary_candidates = group[group["__classified_type"].eq("financial_results_correction")].copy()
+        ambiguous_primary_count = 0
+        if not primary_candidates.empty:
+            normalized_consolidated = (
+                primary_candidates["__consolidated_status"].str.strip().str.lower()
+            )
+            primary_candidates = primary_candidates.assign(
+                __consolidated_priority=normalized_consolidated.map(
+                    lambda value: 0 if value == "consolidated" else 1 if value in {"non-consolidated", "standalone"} else 2
+                )
+            ).sort_values(
+                ["__consolidated_priority", "__announcement_datetime"],
+                na_position="last",
+            )
+            best_priority = primary_candidates["__consolidated_priority"].min()
+            ambiguous_primary_count = int(
+                primary_candidates["__consolidated_priority"].eq(best_priority).sum()
+            )
+        primary_row = primary_candidates.iloc[0] if len(primary_candidates) else None
         result_dt = primary_row["__announcement_datetime"] if primary_row is not None else None
 
         types = set(group["__classified_type"].tolist())
+        document_times = [
+            value for value in group["__announcement_datetime"].tolist()
+            if value is not None and not pd.isna(value)
+        ]
+        first_document_datetime = min(document_times) if document_times else None
+        last_document_datetime = max(document_times) if document_times else None
         quality_flag = "OK"
-        if len(primary) > 1:
+        if ambiguous_primary_count > 1:
             quality_flag = "MULTIPLE_PRIMARY_RESULTS"
         elif result_dt is None:
             quality_flag = "MISSING_RESULT"
@@ -214,8 +269,8 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "has_media_release": "media_release" in types,
             "has_earnings_call": "earnings_call" in types,
             "has_transcript": "earnings_call_transcript" in types,
-            "first_document_datetime": group["__announcement_datetime"].min(),
-            "last_document_datetime": group["__announcement_datetime"].max(),
+            "first_document_datetime": first_document_datetime,
+            "last_document_datetime": last_document_datetime,
             "quality_flag": quality_flag,
         })
 
@@ -227,11 +282,13 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
                 "period_ended": period_date,
                 "announcement_datetime": row["__announcement_datetime"],
                 "document_type": row["__classified_type"],
-                "document_subtype": row["__subtype"],
+                "document_subtype": row["__subtype"] or (
+                    row["__consolidated_status"].strip().lower() or None
+                ),
                 "announcement_text": row["__announcement_text"],
                 "filing_url": row["__filing_url"],
-                "is_primary_result": bool(row["__primary"]),
-                "is_followup_document": bool(row["__followup"]),
+                "is_primary_result": bool(primary_row is not None and row["__document_id"] == primary_row["__document_id"]),
+                "is_followup_document": bool(row["__followup"] or (primary_row is not None and row["__document_id"] != primary_row["__document_id"])),
                 "source": row["__source"],
             })
 
@@ -244,24 +301,91 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
             "result_announcement_datetime": result_dt,
             "last_document_datetime": group["__announcement_datetime"].max(),
             "days_from_period_end": (result_dt.date() - period_date).days if result_dt else None,
-            "primary_result_count": len(primary),
+            "primary_result_count": 1 if primary_row is not None else 0,
             "classification_status": "OK",
             "quality_flag": quality_flag,
         })
 
-    return pd.DataFrame(event_rows), pd.DataFrame(document_rows), pd.DataFrame(quality)
+    events_df = pd.DataFrame(event_rows)
+    documents_df = pd.DataFrame(document_rows)
+    quality_df = pd.DataFrame(quality)
+
+    # A source can contain multiple announcement rows that resolve to the same
+    # business event key. Collapse those event rows before persistence while
+    # retaining every document row.
+    if not events_df.empty and events_df["event_key"].duplicated().any():
+        def _worst_quality(values: pd.Series) -> str:
+            flags = set(values.astype(str))
+            if "MULTIPLE_PRIMARY_RESULTS" in flags:
+                return "MULTIPLE_PRIMARY_RESULTS"
+            if "MISSING_RESULT" in flags:
+                return "MISSING_RESULT"
+            if "SUSPICIOUS_DATE" in flags:
+                return "SUSPICIOUS_DATE"
+            return "OK"
+
+        events_df = (
+            events_df.sort_values(
+                ["event_key", "result_announcement_datetime"],
+                na_position="last",
+            )
+            .groupby("event_key", as_index=False)
+            .agg(
+                symbol=("symbol", "first"),
+                period_ended=("period_ended", "first"),
+                fiscal_period=("fiscal_period", "first"),
+                result_announcement_datetime=("result_announcement_datetime", "min"),
+                document_count=("document_count", "sum"),
+                has_financial_results=("has_financial_results", "max"),
+                has_media_release=("has_media_release", "max"),
+                has_earnings_call=("has_earnings_call", "max"),
+                has_transcript=("has_transcript", "max"),
+                first_document_datetime=("first_document_datetime", "min"),
+                last_document_datetime=("last_document_datetime", "max"),
+                quality_flag=("quality_flag", _worst_quality),
+            )
+        )
+        events_df["announcement_date"] = events_df["result_announcement_datetime"].map(
+            lambda value: value.date() if value is not None and not pd.isna(value) else None
+        )
+        events_df["announcement_time"] = events_df["result_announcement_datetime"].map(
+            lambda value: value.time().isoformat() if value is not None and not pd.isna(value) else None
+        )
+
+        if not quality_df.empty:
+            quality_df = quality_df.drop_duplicates("event_key", keep="first")
+            quality_df["document_count"] = quality_df["event_key"].map(
+                documents_df["event_key"].value_counts()
+            ).fillna(0).astype(int)
+            quality_df["quality_flag"] = quality_df["event_key"].map(
+                events_df.set_index("event_key")["quality_flag"]
+            )
+
+    return events_df, documents_df, quality_df
 
 
 def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, int]:
+    """Idempotently persist canonical events/documents with batched DB access."""
     db = get_session()
     inserted_events = inserted_documents = 0
     try:
         stocks = {stock.symbol: stock for stock in db.scalars(select(Stock)).all()}
+        symbols = set(events["symbol"].dropna().astype(str)) if len(events) else set()
+        missing_stocks = sorted(symbol for symbol in symbols if symbol not in stocks)
+        if missing_stocks:
+            raise ValueError(f"Stock rows missing for symbols: {missing_stocks}")
+
+        event_keys = events["event_key"].dropna().astype(str).tolist()
+        existing_events = {
+            event.event_key: event
+            for event in db.scalars(
+                select(EarningsEvent).where(EarningsEvent.event_key.in_(event_keys))
+            ).all()
+        }
+
         for row in events.itertuples(index=False):
-            stock = stocks.get(row.symbol)
-            if stock is None:
-                raise ValueError(f"Stock row missing for symbol {row.symbol}")
-            existing = db.scalar(select(EarningsEvent).where(EarningsEvent.event_key == row.event_key))
+            stock = stocks[row.symbol]
+            existing = existing_events.get(row.event_key)
             values = dict(
                 stock_id=stock.id,
                 event_key=row.event_key,
@@ -285,20 +409,38 @@ def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, 
             if existing is None:
                 existing = EarningsEvent(**values)
                 db.add(existing)
-                db.flush()
+                existing_events[row.event_key] = existing
                 inserted_events += 1
             else:
                 for key, value in values.items():
                     setattr(existing, key, value)
 
-        db.commit()
+        db.flush()
+
+        document_ids = documents["document_id"].dropna().astype(str).tolist() if len(documents) else []
+        # Replace the document set for rebuilt events. This removes stale rows
+        # left by earlier source/classification versions while preserving all
+        # documents present in the current authoritative source.
+        if event_keys and document_ids:
+            db.execute(
+                delete(EarningsDocument).where(
+                    EarningsDocument.event_key.in_(event_keys),
+                    ~EarningsDocument.document_id.in_(document_ids),
+                )
+            )
+        existing_documents = {
+            document.document_id: document
+            for document in db.scalars(
+                select(EarningsDocument).where(EarningsDocument.document_id.in_(document_ids))
+            ).all()
+        }
 
         for row in documents.itertuples(index=False):
-            event = db.scalar(select(EarningsEvent).where(EarningsEvent.event_key == row.event_key))
+            event = existing_events.get(row.event_key)
             stock = stocks.get(row.symbol)
             if event is None or stock is None:
                 raise ValueError(f"Missing event/stock for document {row.document_id}")
-            existing = db.scalar(select(EarningsDocument).where(EarningsDocument.document_id == row.document_id))
+
             values = dict(
                 event_id=event.id,
                 event_key=row.event_key,
@@ -314,12 +456,14 @@ def persist_events(events: pd.DataFrame, documents: pd.DataFrame) -> tuple[int, 
                 is_followup_document=bool(row.is_followup_document),
                 source=row.source,
             )
+            existing = existing_documents.get(row.document_id)
             if existing is None:
                 db.add(EarningsDocument(document_id=row.document_id, **values))
                 inserted_documents += 1
             else:
                 for key, value in values.items():
                     setattr(existing, key, value)
+
         db.commit()
         return inserted_events, inserted_documents
     except Exception:

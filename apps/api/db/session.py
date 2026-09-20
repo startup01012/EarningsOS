@@ -3,7 +3,7 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from config import settings
+from apps.api.config import settings
 
 
 _engine = None
@@ -18,6 +18,8 @@ def _database_url() -> str:
     if url.startswith("postgresql://"):
         # psycopg 3 is installed in the API environment.
         url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    elif url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
     return url
 
 
