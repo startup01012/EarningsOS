@@ -149,6 +149,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     url_col = _first_column(df, "filing_url", "url", "link", "Filing URL")
     source_col = _first_column(df, "source", "Source")
     fiscal_col = _first_column(df, "fiscal_period", "quarter", "fiscal_quarter")
+    consolidated_col = _first_column(df, "consolidated_status", "consolidated", "Consolidated / Non-Consolidated")
 
     if not symbol_col:
         raise ValueError("Input must contain a symbol column")
@@ -166,6 +167,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     df["__filing_url"] = df[url_col].map(_text) if url_col else ""
     df["__source"] = df[source_col].map(_text) if source_col else "earnings_pipeline"
     df["__fiscal_period"] = df[fiscal_col].map(_text) if fiscal_col else ""
+    df["__consolidated_status"] = df[consolidated_col].map(_text) if consolidated_col else ""
 
     missing_period = df["__period_ended"].isna()
     df.loc[missing_period, "__period_ended"] = df.loc[missing_period, "__announcement_text"].map(_extract_period_from_text)
@@ -219,7 +221,18 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
         primary_candidates = group[group["__classified_type"].eq("financial_results")].copy()
         if primary_candidates.empty:
             primary_candidates = group[group["__classified_type"].eq("financial_results_correction")].copy()
-        primary_candidates = primary_candidates.sort_values("__announcement_datetime", na_position="last")
+        if not primary_candidates.empty:
+            normalized_consolidated = (
+                primary_candidates["__consolidated_status"].str.strip().str.lower()
+            )
+            primary_candidates = primary_candidates.assign(
+                __consolidated_priority=normalized_consolidated.map(
+                    lambda value: 0 if value == "consolidated" else 1 if value in {"non-consolidated", "standalone"} else 2
+                )
+            ).sort_values(
+                ["__consolidated_priority", "__announcement_datetime"],
+                na_position="last",
+            )
         primary_row = primary_candidates.iloc[0] if len(primary_candidates) else None
         result_dt = primary_row["__announcement_datetime"] if primary_row is not None else None
 
@@ -264,7 +277,9 @@ def build_event_documents(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
                 "period_ended": period_date,
                 "announcement_datetime": row["__announcement_datetime"],
                 "document_type": row["__classified_type"],
-                "document_subtype": row["__subtype"],
+                "document_subtype": row["__subtype"] or (
+                    row["__consolidated_status"].strip().lower() or None
+                ),
                 "announcement_text": row["__announcement_text"],
                 "filing_url": row["__filing_url"],
                 "is_primary_result": bool(primary_row is not None and row["__document_id"] == primary_row["__document_id"]),
