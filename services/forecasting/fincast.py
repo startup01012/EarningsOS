@@ -38,7 +38,7 @@ class FinCastAdapter(ForecastAdapter):
         if not self.model_path:
             raise RuntimeError(
                 "FINCAST_MODEL_PATH is not set. Point it to the pretrained FinCast "
-                "v1.pth checkpoint before running FinCast inference."
+                "v1 checkpoint before running FinCast inference."
             )
         if not self.fincast_root:
             raise RuntimeError(
@@ -46,9 +46,18 @@ class FinCastAdapter(ForecastAdapter):
                 "vincent05r/FinCast-fts repository."
             )
         if context_length < 32 or context_length > self.max_context:
-            raise ValueError(f"FinCast context must be between 32 and {self.max_context}")
+            raise ValueError(
+                f"FinCast context must be between 32 and {self.max_context}"
+            )
+        if context_length % 32 != 0:
+            raise ValueError(
+                "FinCast context_length must be a multiple of 32 according to the "
+                "official inference configuration"
+            )
         if horizon < 1 or horizon > self.max_horizon:
-            raise ValueError(f"FinCast horizon must be between 1 and {self.max_horizon}")
+            raise ValueError(
+                f"FinCast horizon must be between 1 and {self.max_horizon}"
+            )
         if not Path(self.model_path).is_file():
             raise RuntimeError(f"FinCast model checkpoint not found: {self.model_path}")
 
@@ -89,20 +98,35 @@ class FinCastAdapter(ForecastAdapter):
         values = np.asarray(request.values, dtype=np.float32)
         if not np.isfinite(values).all():
             raise ValueError("FinCast input contains non-finite values")
+
         api = self._load(len(values), request.horizon)
-        freq = 0  # official FinCast inference maps daily/business-day data to fast freq
-        outputs = api.forecast([values], [freq])
+        # FinCast's official frequency mapper treats 0 as the fast-frequency
+        # bucket used for daily/business-day data.
+        outputs = api.forecast([values], [0])
         if not isinstance(outputs, tuple) or len(outputs) != 2:
             raise RuntimeError("FinCast returned an unexpected forecast structure")
+
         point, full = outputs
         point = np.asarray(point)
         full = None if full is None else np.asarray(full)
+
+        if point.ndim != 2 or point.shape[0] < 1 or point.shape[1] < request.horizon:
+            raise RuntimeError(
+                f"FinCast returned an unexpected point forecast shape: {point.shape}"
+            )
+
         median = point[0, -request.horizon :].astype(float).tolist()
         lower = upper = None
-        if full is not None and full.ndim == 3 and full.shape[2] >= 10:
-            lower = full[0, -request.horizon :, 1].astype(float).tolist()
-            upper = full[0, -request.horizon :, 9].astype(float).tolist()
-            median = full[0, -request.horizon :, 5].astype(float).tolist()
+        if full is not None:
+            if full.ndim != 3 or full.shape[0] < 1 or full.shape[1] < request.horizon:
+                raise RuntimeError(
+                    f"FinCast returned an unexpected distribution shape: {full.shape}"
+                )
+            if full.shape[2] >= 10:
+                lower = full[0, -request.horizon :, 1].astype(float).tolist()
+                upper = full[0, -request.horizon :, 9].astype(float).tolist()
+                median = full[0, -request.horizon :, 5].astype(float).tolist()
+
         return ForecastResult(
             model_id=self.model_id,
             symbol=request.symbol.strip().upper(),
