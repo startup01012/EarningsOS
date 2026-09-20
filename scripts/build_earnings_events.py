@@ -15,8 +15,35 @@ from apps.api.db.session import get_session
 
 
 DATE_PATTERNS = [
-    re.compile(r"(?:quarter|period|year)\s+ended\s*[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4})", re.I),
-    re.compile(r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})\s+(?:quarter|period|year)\s+ended", re.I),
+    re.compile(
+        r"(?:quarter|period|year)(?:\s+and\s+year)?\s+ended"
+        r"\s*[:\-]?\s*(\d{1,2}(?:st|nd|rd|th)?[/-]\d{1,2}[/-]\d{4})",
+        re.I,
+    ),
+    re.compile(
+        r"(?:quarter|period|year)(?:\s+and\s+year)?\s+ended"
+        r"\s*[:\-]?\s*(\d{1,2}(?:st|nd|rd|th)?\s+"
+        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"(?:,)?\s+\d{4})",
+        re.I,
+    ),
+    re.compile(
+        r"(?:quarter|period|year)(?:\s+and\s+year)?\s+ended"
+        r"\s*[:\-]?\s*((?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4})",
+        re.I,
+    ),
+    re.compile(
+        r"(\d{1,2}(?:st|nd|rd|th)?\s+"
+        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"(?:,)?\s+\d{4})\s+(?:quarter|period|year)\s+ended",
+        re.I,
+    ),
+    re.compile(
+        r"((?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4})\s+(?:quarter|period|year)\s+ended",
+        re.I,
+    ),
 ]
 
 
