@@ -45,8 +45,6 @@ jobs:
         run: python -m pip install -r apps/api/requirements.txt pyarrow pandas requests
       - name: Upgrade Alembic schema
         run: PYTHONPATH=. alembic -c alembic.ini upgrade head
-      - name: Sync missing NIFTY50 stocks
-        run: PYTHONPATH=. python scripts/sync_nifty50_stocks.py
       - name: Verify canonical schema and current counts
         run: |
           python - <<'PY'
@@ -70,6 +68,8 @@ jobs:
       - name: Download NSE historical earnings announcements
         run: |
           PYTHONPATH=. python scripts/download_nse_earnings_source.py             --start "2024-01-01"             --end "2026-09-20"             --symbols "$NIFTY50_SYMBOLS"             --output earnings_source.parquet
+      - name: Sync missing NIFTY50 stocks from NSE source
+        run: PYTHONPATH=. python scripts/sync_nifty50_stocks.py --input earnings_source.parquet
       - name: Build and persist canonical earnings events
         run: |
           PYTHONPATH=. python scripts/build_earnings_events.py             --input earnings_source.parquet             --output-dir data/processed             --persist
