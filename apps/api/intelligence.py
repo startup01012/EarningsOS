@@ -6,7 +6,7 @@ from decimal import Decimal
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from apps.api.db.models import (
+from db.models import (
     EarningsEvent,
     Forecast,
     ModelRegistry,
@@ -16,7 +16,7 @@ from apps.api.db.models import (
     SentimentScore,
     Stock,
 )
-from apps.api.db.session import get_session
+from db.session import get_session
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 
